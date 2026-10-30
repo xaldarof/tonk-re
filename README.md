@@ -29,7 +29,7 @@ Runs on **macOS**, **Windows** and **Linux**.
 - **Frida hook generator** — generate a hook script for a method or whole class (trace args/return, stacktrace, override a return value) or a universal SSL-pinning / root-detection bypass; saved into the project with ready `frida` spawn/attach commands.
 - **Java ⇄ smali bridge** — read a class in clean decompiled Java, then jump straight to its smali (multidex- and inner-class-aware) to patch it and rebuild.
 - **Rebuild & sign** — `BUILD` (apktool), `SIGN` (zipalign + apksigner v1–v3), `BUILD+SIGN`, `INSTALL ▸ ADB`, and `RESIGN APK` for any existing APK. A debug keystore is generated automatically. If apktool's resource re-linking fails (common with heavily-optimized or obfuscated apps), BUILD automatically **falls back to a code-only build** — it patches the freshly-compiled dex into a copy of the original APK, so smali/code patches still produce a working signed APK (original resources kept).
-- **Ask Claude** — a built-in chat panel runs the `claude` CLI read-only inside the project, with your editor selection as context, and links file:line references straight into the editor. The conversation has memory (**+ NEW SESSION** starts fresh), and an editable **pre-prompt** template (saved per machine) wraps every question so you can pin a role/output format (e.g. an OWASP MASVS audit).
+- **Ask Claude** — a built-in chat panel runs the `claude` CLI inside the project (read-only, or tick **WRITE** to let it create/edit files in the project folder and `~/Downloads` only), with your editor selection as context, and links file:line references straight into the editor. The conversation has memory (**+ NEW SESSION** starts fresh), and an editable **pre-prompt** template (saved per machine) wraps every question so you can pin a role/output format (e.g. an OWASP MASVS audit).
 - **MCP server** — the same engine is exposed to Claude Code as the `tonk-re` tool set, so you can decompile and audit from any `claude` session.
 - **Retro CRT UI** — scanlines, glow, boot sequence, and a green/amber phosphor toggle. Resizable panels.
 
@@ -53,50 +53,56 @@ Runs on **macOS**, **Windows** and **Linux**.
 
 ## Requirements
 
-| Tool | What for | macOS | Windows | Linux |
-|---|---|---|---|---|
-| [uv](https://docs.astral.sh/uv/) | runs the app (manages Python + deps) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` | `irm https://astral.sh/uv/install.ps1 \| iex` | same as macOS |
-| JDK (Java) | apktool, apksigner, keytool | `brew install openjdk` | `winget install Microsoft.OpenJDK.21` | `sudo apt install default-jdk` |
-| [jadx](https://github.com/skylot/jadx) | Java/Kotlin decompiler | `brew install jadx` | `scoop install jadx` | [releases](https://github.com/skylot/jadx/releases) |
-| [apktool](https://apktool.org) | resources + smali (use **3.x**; older versions often fail resource rebuilds) | `brew install apktool` | `scoop install apktool` | `sudo apt install apktool` |
-| Android SDK build-tools + platform-tools | `apksigner`, `zipalign`, `adb` | Android Studio ▸ SDK Manager (auto-detected) | same | same |
-| [frida](https://frida.re) (optional) | *running* generated hooks (generation needs nothing) | `pipx install frida-tools` | `pipx install frida-tools` | `pipx install frida-tools` |
-| Chrome / Edge / Brave / Chromium | app-window mode (optional) | optional | Edge is built in | optional |
-| zenity *or* kdialog | the `BROWSE` file dialog | built in | built in | `sudo apt install zenity` |
+**You only need [uv](https://docs.astral.sh/uv/)**, and the setup script installs that too. Everything else is installed with one click from the app's **SETUP ⚙** panel (or `tonkre setup all`) into `~/.tonkre/tools`: per-user, no admin/sudo, no package manager, no PATH changes. To uninstall, delete that folder. Every download is checksum-verified before it is unpacked.
 
-Everything except uv is optional to *start* the app — TONK-RE probes for each tool on launch. The boot screen shows an `[ OK ]` / `[MISSING]` check for each, a **setup banner** lists any missing required tool with the exact install command for your OS, and if you try an action whose tool is missing (e.g. DECOMPILE without jadx) you get a clear message with the install command instead of an error. jadx + apktool are needed to decompile; a JDK (keytool) + apksigner/zipalign to sign; adb to install; frida only to *run* generated hooks.
+| Component | What for | Installed from | |
+|---|---|---|---|
+| JDK 21 (Temurin) | runs jadx/apktool/apksigner; `keytool` for signing | [Adoptium](https://adoptium.net) (sha256) | required |
+| [jadx](https://github.com/skylot/jadx) | Java/Kotlin decompiler | GitHub release (sha256) | required |
+| [apktool](https://apktool.org) 3.x | manifest, resources, smali, rebuild | GitHub release (sha256) | required |
+| Android build-tools | `apksigner`, `zipalign` (v2/v3 signing) | Google SDK repository (sha1), needs the Android SDK License accepted | required to sign |
+| Android platform-tools | `adb`: INSTALL to device, intents | Google SDK repository (sha1), needs the Android SDK License accepted | optional |
+| [frida-tools](https://frida.re) | *running* generated hooks (generating them needs nothing) | `uv tool install frida-tools` | optional |
+| Chrome / Edge / Brave / Chromium | app-window mode | your system | optional |
+| zenity *or* kdialog (Linux) | the `BROWSE` file dialog | `sudo apt install zenity` | optional |
+
+Tools you already have (on `PATH`, or in an Android SDK at `ANDROID_HOME` / the Android Studio default) are detected and used as-is; SETUP only fills the gaps. The panel opens on its own when a required tool is missing, and if you try an action whose tool is missing (e.g. DECOMPILE without jadx) the console tells you which SETUP button to press.
 
 > **macOS note:** only macOS gets the native Dock app (`.app`). Windows and Linux run in an app window of your Chromium-family browser, or a normal browser tab.
 
 ## Install
 
-Clone, then run the installer for your OS.
+**New users: double-click the setup file.** Download the repo (git clone or *Code ▸ Download ZIP*), then:
+
+| OS | Double-click | or from a terminal |
+|---|---|---|
+| Windows | `Setup-TONK-RE.cmd` | `Setup-TONK-RE.cmd` |
+| macOS | `Setup-TONK-RE.command` | `./setup.sh` |
+| Linux | n/a | `./setup.sh` |
+
+It installs uv if needed, runs the installer below, and opens TONK-RE. In the **SETUP ⚙** panel, tick *I accept the Android SDK License* and press **INSTALL ALL**. That's it.
 
 ```sh
 git clone https://github.com/xaldarof/tonk-re.git
 cd tonk-re
 ```
 
-**macOS / Linux**
+**Installer only** (if you already have uv): `./install.sh` (macOS / Linux) or `powershell -ExecutionPolicy Bypass -File install.ps1` (Windows). It:
 
-```sh
-./install.sh
-```
-
-**Windows (PowerShell)**
-
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
-
-The installer:
-
-- checks for required tools and prints the exact install command for anything missing,
 - creates the `tonkre-gui` (GUI) and `tonkre` (CLI) launchers in `~/.local/bin`,
-- installs the Claude Code skill, and
-- registers the `tonk-re` MCP server with Claude Code (if the `claude` CLI is present).
+- installs the Claude Code skill,
+- registers the `tonk-re` MCP server with Claude Code (if the `claude` CLI is present), and
+- prints the toolchain status (`tonkre setup status`).
 
 On Windows it also adds a **TONK-RE** desktop shortcut.
+
+**Toolchain from the CLI** (headless / CI):
+
+```sh
+tonkre setup                                   # status of every component
+tonkre setup all --accept-android-license      # install everything missing
+tonkre setup jadx apktool                      # or just some (the JDK is added automatically if needed)
+```
 
 ### Updating apktool
 
@@ -201,7 +207,7 @@ Decompiled projects live in `$TONKRE_HOME/projects/`; the auto-generated signing
 
 ### Security model
 
-The server listens only on `127.0.0.1` and every API call requires a secret token generated fresh at launch (printed in the URL). Other websites in your browser can't reach it without the token. Nothing is uploaded anywhere — all analysis is local. The `claude` panel runs the CLI with `--allowedTools Read,Grep,Glob` (read-only) scoped to the project directory.
+The server listens only on `127.0.0.1` and every API call requires a secret token generated fresh at launch (printed in the URL). Other websites in your browser can't reach it without the token. Nothing is uploaded anywhere — all analysis is local. The `claude` panel runs the CLI with `--allowedTools Read,Grep,Glob` (read-only) in the project directory. Ticking **WRITE** adds `Edit(./**)` and `Edit(~/Downloads/**)`, so it can create/edit files only in the project folder and Downloads; writes anywhere else are still denied.
 
 ## Project layout
 
@@ -212,6 +218,8 @@ tonk-re/
 ├── ui.html            retro-terminal front-end
 ├── install.sh         macOS / Linux installer
 ├── install.ps1        Windows installer
+├── setup.sh, Setup-TONK-RE.cmd/.command   one-click bootstrap (uv + installer + open app)
+├── tools.py           toolchain manager: SETUP panel / `tonkre setup` installs into ~/.tonkre/tools
 ├── macos/
 │   ├── build_app.sh   builds TONK-RE.app (+ --dock)
 │   └── make_icon.py   renders the CRT app icon

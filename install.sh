@@ -1,25 +1,16 @@
 #!/bin/sh
-# tonk-re installer for macOS and Linux
+# tonk-re installer for macOS and Linux: launchers, Claude Code skill + MCP server.
+# The toolchain (JDK, jadx, apktool, Android build/platform-tools, frida) is installed from the app's
+# SETUP panel or `tonkre setup`. New users: run ./setup.sh (or double-click Setup-TONK-RE.command on macOS).
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="$HOME/.local/bin"
 OS="$(uname -s)"
 
 need() { command -v "$1" >/dev/null 2>&1; }
-hint() {
-  case "$OS" in
-    Darwin) echo "    brew install $2" ;;
-    Linux)  echo "    $3" ;;
-  esac
-}
 
 echo "== tonk-re installer ($OS)"
-missing=0
-need uv      || { echo "[-] uv missing";      echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"; missing=1; }
-need java    || { echo "[-] java missing";    hint java openjdk "sudo apt install default-jdk   (or dnf install java-17-openjdk)"; missing=1; }
-need jadx    || { echo "[-] jadx missing";    hint jadx jadx "download from https://github.com/skylot/jadx/releases and add bin/ to PATH"; missing=1; }
-need apktool || { echo "[-] apktool missing"; hint apktool apktool "sudo apt install apktool   (or see https://apktool.org/docs/install)"; missing=1; }
-need adb     || echo "[!] adb not on PATH (optional, for INSTALL). Android SDK platform-tools will be auto-detected."
+need uv || { echo "[-] uv missing:  curl -LsSf https://astral.sh/uv/install.sh | sh   (or run ./setup.sh)"; exit 1; }
 [ "$OS" = Linux ] && ! need zenity && ! need kdialog && echo "[!] install zenity or kdialog for the BROWSE file dialog (drag & drop works without it)"
 
 mkdir -p "$BIN"
@@ -37,4 +28,7 @@ else
 fi
 
 case ":$PATH:" in *":$BIN:"*) ;; *) echo "[!] add $BIN to PATH:  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.profile";; esac
-[ $missing = 1 ] && echo "[!] install the missing tools above, then run: tonkre-gui" || echo "[+] done. run: tonkre-gui"
+
+printf '\n== toolchain\n'
+uv run --quiet --script "$DIR/server.py" cli setup status || true
+printf '\n[+] done. run: tonkre-gui   (missing tools: SETUP > INSTALL ALL in the app, or: tonkre setup all)\n'

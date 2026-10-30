@@ -11,7 +11,6 @@ Works on macOS, Windows and Linux. Binds to 127.0.0.1 only; every API call needs
 """
 from __future__ import annotations
 
-import glob
 import json
 import os
 import secrets
@@ -19,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,7 +26,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
-import server as core  # noqa: E402
+import server as core  # noqa: E402  (importing it also runs tools.activate())
+import tools  # noqa: E402
 
 IS_WIN, IS_MAC = sys.platform == "win32", sys.platform == "darwin"
 HERE = Path(__file__).parent
@@ -36,74 +37,44 @@ KEYSTORE = HOME / "debug.keystore"
 KS_PASS, KS_ALIAS = "android", "tonkre"
 TOKEN = secrets.token_urlsafe(24)
 PORT = int(os.environ.get("TONKRE_PORT", "7777"))
+# Launched without a console (desktop shortcut: `uvw run --gui-script gui.py`, pythonw): stdout is None.
+WINDOWLESS = sys.stdout is None
+LAST_SEEN = [time.time()]  # last authed API call; the UI pings /api/ping, so this tracks "a window is open"
+
+if IS_WIN:
+    # Never give child tools (java, jadx.bat, apktool, claude, powershell) a console of their own: without this
+    # every job flashes a black window when TONK-RE itself runs windowless. Output is piped anyway.
+    _popen_init = subprocess.Popen.__init__
+
+    def _no_window_init(self, *a, **kw):
+        kw.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+        _popen_init(self, *a, **kw)
+
+    subprocess.Popen.__init__ = _no_window_init
 
 
-def _default_sdk() -> Path:
-    for var in ("ANDROID_HOME", "ANDROID_SDK_ROOT"):
-        if os.environ.get(var):
-            return Path(os.environ[var])
-    if IS_WIN:
-        return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "Android" / "Sdk"
-    if IS_MAC:
-        return Path.home() / "Library" / "Android" / "sdk"
-    return Path.home() / "Android" / "Sdk"
-
-
-SDK = _default_sdk()
-# Windows ships SDK tools as .bat/.exe wrappers
-EXTS = [".bat", ".exe", ".cmd", ""] if IS_WIN else [""]
-
-
-def _which_in(dirs: list[Path], name: str) -> str | None:
-    for d in dirs:
-        for ext in EXTS:
-            if (d / (name + ext)).is_file():
-                return str(d / (name + ext))
-    return None
-
-
-def build_tool(name: str) -> str | None:
-    """Find a build-tools binary (apksigner, zipalign) in PATH or the newest SDK build-tools."""
-    if shutil.which(name):
-        return shutil.which(name)
-    dirs = sorted((Path(p) for p in glob.glob(str(SDK / "build-tools" / "*"))),
-                  key=lambda p: [int(x) if x.isdigit() else 0 for x in p.name.split(".")], reverse=True)
-    return _which_in(dirs, name)
+SDK = tools.system_sdk()
+build_tool = tools.build_tool  # apksigner / zipalign: PATH, the user's SDK, then ~/.tonkre/tools
 
 
 def tool(name: str) -> str | None:
-    if name == "adb":
-        return shutil.which("adb") or _which_in([SDK / "platform-tools"], "adb")
     if name == "claude":
-        return shutil.which("claude") or _which_in([Path.home() / ".local" / "bin"], "claude")
-    if name in ("jadx", "apktool", "keytool", "jarsigner"):
-        return shutil.which(name)
-    return build_tool(name)
+        return shutil.which("claude") or tools._which_in([Path.home() / ".local" / "bin"], "claude")
+    return tools.find(name)
 
 
 # ---------- tool availability / install hints ----------
 
-_OSKEY = "win32" if IS_WIN else "darwin" if IS_MAC else "linux"
-INSTALL_HINTS = {
-    "jadx": {"darwin": "brew install jadx", "win32": "scoop install jadx",
-             "linux": "download from github.com/skylot/jadx/releases and add bin/ to PATH"},
-    "apktool": {"darwin": "brew install apktool", "win32": "scoop install apktool",
-                "linux": "sudo apt install apktool  (or see apktool.org/docs/install)"},
-    "apksigner": {"darwin": "install Android SDK build-tools (Android Studio ▸ SDK Manager)",
-                  "win32": "install Android SDK build-tools (Android Studio ▸ SDK Manager)",
-                  "linux": "install Android SDK build-tools (Android Studio ▸ SDK Manager)"},
-    "zipalign": {k: "install Android SDK build-tools (Android Studio ▸ SDK Manager)"
-                 for k in ("darwin", "win32", "linux")},
-    "adb": {"darwin": "brew install android-platform-tools  (or Android SDK platform-tools)",
-            "win32": "install Android SDK platform-tools", "linux": "sudo apt install adb"},
-    "keytool": {k: "install a JDK (comes with Java)" for k in ("darwin", "win32", "linux")},
-    "frida": {k: "pipx install frida-tools  (only needed to RUN hooks)" for k in ("darwin", "win32", "linux")},
-    "claude": {k: "see claude.com/claude-code  (optional: the AI assistant)" for k in ("darwin", "win32", "linux")},
-}
+# tool -> the SETUP component that installs it (one click, into ~/.tonkre/tools)
+PROVIDER = {p: cid for cid, c in tools.COMPONENTS.items() for p in c["provides"]} | {"jarsigner": "jdk"}
 
 
 def hint(name: str) -> str:
-    return INSTALL_HINTS.get(name, {}).get(_OSKEY, "see the README")
+    if name in PROVIDER:
+        return f"SETUP ▸ INSTALL {PROVIDER[name]}   (CLI: tonkre setup {PROVIDER[name]})"
+    if name == "claude":
+        return "see claude.com/claude-code  (optional: the AI assistant)"
+    return "see the README"
 
 
 _APKTOOL_VER = None  # cached across requests
@@ -132,7 +103,7 @@ def require(out, names: list[str]) -> bool:
     out(f"[-] missing required tool(s): {', '.join(missing)}\n")
     for n in missing:
         out(f"    install {n}:  {hint(n)}\n")
-    out("    then restart TONK-RE (or re-run ./install.sh to re-check).\n")
+    out("    or click SETUP in the toolbar ▸ INSTALL ALL (no restart needed).\n")
     return False
 
 
@@ -184,8 +155,10 @@ def open_path(p: Path) -> None:
         subprocess.Popen(["xdg-open", str(p)])
 
 
-def open_app_window(url: str) -> bool:
-    """Open the UI in a chromeless Chromium-family window (Chrome, Edge, Brave, Chromium)."""
+def open_app_window(url: str) -> subprocess.Popen | bool:
+    """Open the UI in a chromeless Chromium-family window (Chrome, Edge, Brave, Chromium).
+    On Windows/Linux the window gets its own browser profile, so the returned process lives exactly as long as
+    the window (waitable); macOS goes through `open` and just returns True."""
     args = [f"--app={url}", "--window-size=1500,920"]
     if IS_MAC:
         for app in ("Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium"):
@@ -201,10 +174,10 @@ def open_app_window(url: str) -> bool:
     else:
         cands = [shutil.which(b) for b in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
                                             "microsoft-edge", "microsoft-edge-stable", "brave-browser")]
+    args += [f"--user-data-dir={HOME / 'appwindow'}", "--no-first-run", "--no-default-browser-check"]
     for c in cands:
         if c and Path(c).is_file():
-            subprocess.Popen([c, *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return True
+            return subprocess.Popen([c, *args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return False
 
 
@@ -446,8 +419,14 @@ def get_preprompt() -> str:
         return DEFAULT_PREPROMPT
 
 
+CLAUDE_READ = ["Read", "Grep", "Glob"]
+# Edit(path) rules cover every file-writing tool (Write, Edit, ...); paths outside them stay denied in -p mode
+CLAUDE_WRITE = ["Edit(./**)", "Edit(~/Downloads/**)"]
+
+
 def act_claude(out, body):
-    """Ask Claude Code about the project; it runs read-only inside the project directory.
+    """Ask Claude Code about the project, run inside the project directory. Read-only by default; with
+    body["write"] it may also create/edit files, but only in the project and ~/Downloads (CLAUDE_WRITE).
     A session id keeps conversation context across questions; a new id starts fresh.
     The question is wrapped in the user's saved pre-prompt template ({question}/{context})."""
     if not require(out, ["claude"]):
@@ -459,6 +438,9 @@ def act_claude(out, body):
         ctx += f"The user is viewing file: {body['file']}\n"
     if body.get("selection"):
         ctx += f"Selected code:\n```\n{body['selection'][:8000]}\n```\n"
+    if body.get("write"):
+        ctx += ("You may create and edit files, but only inside this project directory and the user's Downloads "
+                f"folder ({Path.home() / 'Downloads'}). Writes anywhere else are denied.\n")
     tpl = get_preprompt()
     q = body["question"]
     # substitute placeholders; if the template omits {question}, append it so nothing is lost
@@ -466,7 +448,7 @@ def act_claude(out, body):
     if "{question}" not in tpl:
         prompt += "\n\n" + q
     cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose",
-           "--allowedTools", "Read,Grep,Glob"]
+           "--allowedTools", ",".join(CLAUDE_READ + (CLAUDE_WRITE if body.get("write") else []))]
     sid = body.get("session")
     if sid:
         if sid in _CLAUDE_SESSIONS:
@@ -519,13 +501,21 @@ def act_intent(out, body):
     stream_cmd(out, [adb, *argv])
 
 
+def act_setup(out, body):
+    """Install toolchain components into ~/.tonkre/tools (see tools.py)."""
+    global _APKTOOL_VER
+    tools.install(out, body.get("ids") or ["all"], bool(body.get("accept_license")))
+    _APKTOOL_VER = None  # re-probe: apktool may have just been installed
+
+
 def _run_adb_devices(adb):
     r = subprocess.run([adb, "devices"], capture_output=True, text=True)
     return r.returncode, "\n".join(l for l in r.stdout.splitlines()[1:] if l.strip())
 
 
 ACTIONS = {"decompile": act_decompile, "build": act_build, "sign": act_sign, "build_sign": act_build_sign,
-           "resign": act_resign, "install": act_install, "claude": act_claude, "intent": act_intent}
+           "resign": act_resign, "install": act_install, "claude": act_claude, "intent": act_intent,
+           "setup": act_setup}
 
 
 # ---------- HTTP ----------
@@ -558,6 +548,7 @@ class H(BaseHTTPRequestHandler):
         if self.headers.get("X-Token") != TOKEN:
             self._json({"error": "bad token"}, 403)
             return False
+        LAST_SEEN[0] = time.time()
         return True
 
     def do_GET(self):
@@ -581,7 +572,9 @@ class H(BaseHTTPRequestHandler):
             return
         try:
             p = q.get("project", "")
-            if u.path == "/api/projects":
+            if u.path == "/api/ping":
+                self._json({})
+            elif u.path == "/api/projects":
                 self._json(json.loads(core.list_projects()))
             elif u.path == "/api/ls":
                 self._json(ls(p, q.get("path", "")))
@@ -609,6 +602,11 @@ class H(BaseHTTPRequestHandler):
                 self._json(core.diff_versions(q["a"], q["b"]))
             elif u.path == "/api/preprompt":
                 self._json({"text": get_preprompt(), "default": DEFAULT_PREPROMPT})
+            elif u.path == "/api/setup":
+                self._json({"components": tools.status(), "home": str(tools.TOOLS),
+                            "license_url": tools.ANDROID_LICENSE_URL})
+            elif u.path == "/api/setup/license":
+                self._json({"text": tools.android_license(), "url": tools.ANDROID_LICENSE_URL})
             elif u.path == "/api/tools":
                 names = ("jadx", "apktool", "apksigner", "zipalign", "adb", "keytool", "frida", "claude")
                 self._json({t: tool(t) for t in names} | {"os": sys.platform,
@@ -699,15 +697,44 @@ def run_native() -> None:
     srv.shutdown()
 
 
+class Server(ThreadingHTTPServer):
+    # Windows' SO_REUSEADDR lets a second TONK-RE bind the same port (both "listen", one gets the traffic);
+    # without it a busy port fails loudly and main() falls back to a free one.
+    allow_reuse_address = not IS_WIN
+
+
+def _quit_when_closed(srv, win) -> None:
+    """Windowless mode has no console to Ctrl+C, so stop the server once the UI is gone: when the app window's
+    browser process exits, or (browser tab, or a window handed off to an already-running browser) when no UI
+    has called in for 5 minutes. Hidden pages throttle timers to ~1/min, hence the generous timeout."""
+    t0 = time.time()
+    if isinstance(win, subprocess.Popen):
+        win.wait()
+        if time.time() - t0 > 5:  # a real window that the user closed (a hand-off exits within moments)
+            return srv.shutdown()
+    while time.time() - LAST_SEEN[0] < 300:
+        time.sleep(10)
+    srv.shutdown()
+
+
 def main():
     if "--native" in sys.argv:
         return run_native()
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
-    url = f"http://127.0.0.1:{PORT}/?t={TOKEN}"
+    if WINDOWLESS:
+        HOME.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = open(HOME / "gui.log", "w", encoding="utf-8", buffering=1)
+    try:
+        srv = Server(("127.0.0.1", PORT), H)
+    except OSError:  # port taken (e.g. another TONK-RE still running): any free port works, the token is per-launch
+        srv = Server(("127.0.0.1", 0), H)
+    url = f"http://127.0.0.1:{srv.server_address[1]}/?t={TOKEN}"
     print(f"tonk-re GUI -> {url}", flush=True)
+    win = None
     if "--no-open" not in sys.argv:
-        if "--browser" in sys.argv or not open_app_window(url):
+        if "--browser" in sys.argv or not (win := open_app_window(url)):
             webbrowser.open(url)
+    if WINDOWLESS:
+        threading.Thread(target=_quit_when_closed, args=(srv, win), daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
