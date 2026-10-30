@@ -80,6 +80,8 @@ body.resizing{cursor:col-resize;user-select:none}
 .node{padding:0 8px;cursor:pointer;white-space:nowrap;line-height:1.15}
 .node:hover{background:var(--faint);color:var(--hi)}
 .node.active{background:var(--fg);color:var(--bg);text-shadow:none}
+.node.claude-edit{background:var(--amber)!important;color:var(--bg)!important;text-shadow:none;
+  box-shadow:0 0 8px var(--amber);transition:background .2s}
 .kids{padding-left:14px;border-left:1px dotted var(--line);margin-left:12px}
 
 #main{grid-area:main;border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;min-height:0}
@@ -509,6 +511,31 @@ async function refreshDir(path) {
 }
 const fileIcon = n => /\.java$/.test(n) ? "J " : /\.smali$/.test(n) ? "S " : /\.xml$/.test(n) ? "X " : /\.so$/.test(n) ? "⚙ " : /\.apk$/.test(n) ? "▣ " : "· ";
 
+// expand the tree down to a file path (top-down, lazily rendering each level)
+async function expandTo(path) {
+  const parts = path.split("/");
+  let acc = "";
+  for (let i = 0; i < parts.length - 1; i++) {
+    acc = acc ? acc + "/" + parts[i] : parts[i];
+    const node = $(`.node[data-path="${CSS.escape(acc)}"]`);
+    const kids = $(`.kids[data-dir="${CSS.escape(acc)}"]`);
+    if (node && kids && kids.hidden) await node.onclick();  // expand + render children
+    else if (!node) break;                                   // ancestor not present; give up
+  }
+  return $(`.node[data-path="${CSS.escape(path)}"]`);
+}
+// flash a file orange in the tree when Claude reads it, expanding to it if collapsed
+let _flashTimers = {};
+async function flashClaudeFile(rel) {
+  if (!project) return;
+  let node = $(`.node[data-path="${CSS.escape(rel)}"]`) || await expandTo(rel);
+  if (!node) return;
+  node.scrollIntoView({block: "nearest"});
+  node.classList.add("claude-edit");
+  clearTimeout(_flashTimers[rel]);
+  _flashTimers[rel] = setTimeout(() => node.classList.remove("claude-edit"), 1000);
+}
+
 // ---------- editor ----------
 CodeMirror.defineSimpleMode("smali", {start: [
   {regex: /#.*/, token: "comment"},
@@ -829,8 +856,11 @@ async function askClaude() {
   let md = "";
   try {
     await stream("claude", {project, question, file: current, selection: sel, session: claudeSession}, line => {
-      if (line.startsWith("@@TOOL ")) { out.insertAdjacentHTML("beforebegin", `<span class="t">  ⚙ ${esc(line.slice(7))}</span>\n`); }
-      else { md += line + "\n"; out.innerHTML = linkify(md); }
+      if (line.startsWith("@@TOOL")) {
+        const [, name, label, rel] = line.split("\t");
+        out.insertAdjacentHTML("beforebegin", `<span class="t">  ⚙ ${esc(name)} ${esc(label || "")}</span>\n`);
+        if (rel) flashClaudeFile(rel);
+      } else { md += line + "\n"; out.innerHTML = linkify(md); }
       chat.scrollTop = chat.scrollHeight;
     });
   } catch (e) { md += "[-] " + e.message; out.innerHTML = linkify(md); }

@@ -488,7 +488,16 @@ def act_claude(out, body):
                     out(c["text"] + "\n")
                 elif c.get("type") == "tool_use":
                     arg = c.get("input", {})
-                    out(f"@@TOOL {c['name']} {arg.get('pattern') or arg.get('file_path') or ''}\n")
+                    fp = arg.get("file_path") or arg.get("path") or ""
+                    label = arg.get("pattern") or fp or ""
+                    rel = ""  # project-relative path, so the UI can flash it in the tree
+                    if fp:
+                        try:
+                            ap = Path(fp) if Path(fp).is_absolute() else (proj / fp)
+                            rel = ap.resolve().relative_to(proj.resolve()).as_posix()
+                        except Exception:
+                            rel = ""
+                    out(f"@@TOOL\t{c['name']}\t{label}\t{rel}\n")
         elif ev.get("type") == "result" and ev.get("is_error"):
             out(f"[-] {ev.get('result')}\n")
     p.wait()
