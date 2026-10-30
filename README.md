@@ -58,7 +58,7 @@ Runs on **macOS**, **Windows** and **Linux**.
 | [uv](https://docs.astral.sh/uv/) | runs the app (manages Python + deps) | `curl -LsSf https://astral.sh/uv/install.sh \| sh` | `irm https://astral.sh/uv/install.ps1 \| iex` | same as macOS |
 | JDK (Java) | apktool, apksigner, keytool | `brew install openjdk` | `winget install Microsoft.OpenJDK.21` | `sudo apt install default-jdk` |
 | [jadx](https://github.com/skylot/jadx) | Java/Kotlin decompiler | `brew install jadx` | `scoop install jadx` | [releases](https://github.com/skylot/jadx/releases) |
-| [apktool](https://apktool.org) | resources + smali | `brew install apktool` | `scoop install apktool` | `sudo apt install apktool` |
+| [apktool](https://apktool.org) | resources + smali (use **3.x**; older versions often fail resource rebuilds) | `brew install apktool` | `scoop install apktool` | `sudo apt install apktool` |
 | Android SDK build-tools + platform-tools | `apksigner`, `zipalign`, `adb` | Android Studio ▸ SDK Manager (auto-detected) | same | same |
 | [frida](https://frida.re) (optional) | *running* generated hooks (generation needs nothing) | `pipx install frida-tools` | `pipx install frida-tools` | `pipx install frida-tools` |
 | Chrome / Edge / Brave / Chromium | app-window mode (optional) | optional | Edge is built in | optional |
@@ -97,6 +97,16 @@ The installer:
 - registers the `tonk-re` MCP server with Claude Code (if the `claude` CLI is present).
 
 On Windows it also adds a **TONK-RE** desktop shortcut.
+
+### Updating apktool
+
+Older apktool (< 3.x) frequently fails to recompile resources for optimized/obfuscated apps. TONK-RE warns at startup if yours is old and still produces a working **code-only** build, but for full resource rebuilds update apktool:
+
+```sh
+./macos/update-apktool.sh           # macOS / Linux; downloads, verifies, installs apktool 3.x
+```
+
+Then re-decompile the affected app with **FORCE** checked.
 
 ### macOS: Dock app
 

@@ -106,6 +106,24 @@ def hint(name: str) -> str:
     return INSTALL_HINTS.get(name, {}).get(_OSKEY, "see the README")
 
 
+_APKTOOL_VER = None  # cached across requests
+
+
+def apktool_version() -> str | None:
+    """apktool's reported version string, e.g. '2.9.3' (cached)."""
+    global _APKTOOL_VER
+    if _APKTOOL_VER is None:
+        at = tool("apktool")
+        if not at:
+            return None
+        try:
+            r = subprocess.run([at, "--version"], capture_output=True, text=True, timeout=30)
+            _APKTOOL_VER = (r.stdout + r.stderr).strip().splitlines()[-1].strip() if r.returncode == 0 else ""
+        except Exception:
+            _APKTOOL_VER = ""
+    return _APKTOOL_VER or None
+
+
 def require(out, names: list[str]) -> bool:
     """Stream a clear, OS-specific message for any missing tool. Returns True only if all present."""
     missing = [n for n in names if not tool(n)]
@@ -585,6 +603,7 @@ class H(BaseHTTPRequestHandler):
             elif u.path == "/api/tools":
                 names = ("jadx", "apktool", "apksigner", "zipalign", "adb", "keytool", "frida", "claude")
                 self._json({t: tool(t) for t in names} | {"os": sys.platform,
+                           "apktool_version": apktool_version(),
                            "hints": {t: hint(t) for t in names if not tool(t)}})
             else:
                 self._json({"error": "not found"}, 404)

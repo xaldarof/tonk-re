@@ -856,6 +856,12 @@ $("#ask").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDe
   for (const l of lines) { boot.textContent += l + "\n"; await new Promise(r => setTimeout(r, 70)); }
   $("#sTools").innerHTML = ["apksigner", "zipalign", "adb"].map(k => `<span class="${t[k] ? "" : "bad"}">${k}${t[k] ? "✓" : "✗"}</span>`).join(" ");
   renderSetup(t);
+  // warn when apktool is old (resource rebuilds often fail on <3.x; code-only build still works)
+  const av = t.apktool_version, major = av && parseInt(av.split(".")[0], 10);
+  if (major && major < 3) {
+    log(`[!] apktool ${av} is old — full resource rebuilds may fail (you'll get a code-only build).`);
+    log(`    update it:  ~/tonk-re/macos/update-apktool.sh   then re-decompile with FORCE.`);
+  }
   setTimeout(() => boot.classList.add("gone"), 350);
   setButtons();
   loadProjects();
