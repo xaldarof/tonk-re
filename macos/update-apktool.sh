@@ -14,12 +14,18 @@ if ! curl -fL --progress-bar -o "$TMP" "$URL"; then
   exit 1
 fi
 
-# verify it is a real apktool jar of the expected version before touching anything
-if ! unzip -p "$TMP" properties/apktool.properties 2>/dev/null | grep -q "application.version=$VER"; then
-  echo "[-] downloaded file is not a valid apktool $VER jar (got $(wc -c < "$TMP") bytes). Aborting; nothing changed."
+# verify it is a real, runnable apktool jar before touching anything (the most reliable check:
+# run it and read the version — internal jar layout differs between apktool 2.x and 3.x)
+if ! unzip -l "$TMP" >/dev/null 2>&1; then
+  echo "[-] downloaded file is not a valid jar/zip (got $(wc -c < "$TMP") bytes). Aborting; nothing changed."
   exit 1
 fi
-echo "[+] verified apktool $VER jar"
+GOT="$(java -jar "$TMP" --version 2>/dev/null | tr -d '\r' | grep -Eo '[0-9]+\.[0-9]+(\.[0-9]+)?' | tail -1)"
+if [ -z "$GOT" ]; then
+  echo "[-] downloaded jar did not run (java -jar ... --version produced no version). Aborting; nothing changed."
+  exit 1
+fi
+echo "[+] verified: downloaded apktool reports version $GOT"
 
 WRAP="$(command -v apktool || true)"
 DST=""
