@@ -316,8 +316,29 @@ def act_claude(out, body):
     p.wait()
 
 
+def act_intent(out, body):
+    """Fire an adb intent (am start/broadcast/start-foreground-service) at an exported component."""
+    adb = tool("adb")
+    if not adb:
+        out("[-] adb not found\n")
+        return
+    argv = core.build_am(body["kind"], body["component"], body.get("action", ""), body.get("data", ""),
+                         body.get("categories"), body.get("mime", ""), body.get("extras"), body.get("flags"))
+    rc, devs = _run_adb_devices(adb)
+    if "device" not in devs:
+        out("[!] no device/emulator attached (adb devices shows none). Command that would run:\n")
+        out("$ adb " + " ".join(argv) + "\n")
+        return
+    stream_cmd(out, [adb, *argv])
+
+
+def _run_adb_devices(adb):
+    r = subprocess.run([adb, "devices"], capture_output=True, text=True)
+    return r.returncode, "\n".join(l for l in r.stdout.splitlines()[1:] if l.strip())
+
+
 ACTIONS = {"decompile": act_decompile, "build": act_build, "sign": act_sign, "build_sign": act_build_sign,
-           "resign": act_resign, "install": act_install, "claude": act_claude}
+           "resign": act_resign, "install": act_install, "claude": act_claude, "intent": act_intent}
 
 
 # ---------- HTTP ----------
@@ -365,6 +386,10 @@ class H(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(html)
             return
+        if u.path == "/favicon.ico":
+            self.send_response(204)
+            self.end_headers()
+            return
         if not self._authed():
             return
         try:
@@ -389,9 +414,15 @@ class H(BaseHTTPRequestHandler):
             elif u.path == "/api/search":
                 self._json({"text": core.search_code(p, q["q"], q.get("scope", "java"),
                                                      q.get("i") == "1")})
+            elif u.path == "/api/intents":
+                self._json(core.intents(p))
+            elif u.path == "/api/counterpart":
+                self._json(core.counterpart(p, q["path"]))
+            elif u.path == "/api/diff":
+                self._json(core.diff_versions(q["a"], q["b"]))
             elif u.path == "/api/tools":
                 self._json({t: tool(t) for t in ("jadx", "apktool", "apksigner", "zipalign", "adb", "claude")}
-                           | {"os": sys.platform})
+                           | {"frida": shutil.which("frida"), "os": sys.platform})
             else:
                 self._json({"error": "not found"}, 404)
         except Exception as e:
@@ -420,6 +451,9 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/reveal":
                 open_path(dist_dir(body["project"]))
                 return self._json({"ok": True})
+            if u.path == "/api/frida":
+                return self._json(core.frida_script(body["project"], body.get("class", ""),
+                                                    body.get("method", ""), body.get("template", "trace")))
             if u.path.startswith("/api/run/"):
                 return self._stream(ACTIONS[u.path.rsplit("/", 1)[1]], body)
             self._json({"error": "not found"}, 404)

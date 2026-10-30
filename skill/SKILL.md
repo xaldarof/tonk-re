@@ -17,10 +17,15 @@ Tools come from the `tonk-re` MCP server (`mcp__tonk-re__*`).
    the surrounding code; regex hits are leads, not findings.
 5. **Dig in**: `search_code` (scopes: java/smali/resources/all), `xrefs`, `read_class`, `read_file`.
    When jadx output is broken (`/* JADX WARNING */`), read the smali at `apktool/smali*/...`.
-6. **Native / non-Java**: Flutter (`libapp.so`), React Native (`assets/index.android.bundle`),
+6. **Test the surface**: `list_intents` turns exported components and deep links into `adb am`
+   commands; for a risky handler, `generate_frida_hook(project, class, method)` makes a runtime trace.
+7. **Patch**: `smali_for_class` maps a Java class to its smali so the user can edit and rebuild
+   (jadx Java is read-only; apktool rebuilds from smali).
+8. **Compare versions**: `diff_apks(project_a, project_b)` for permission/component/class/URL deltas.
+9. **Native / non-Java**: Flutter (`libapp.so`), React Native (`assets/index.android.bundle`),
    Unity, and Xamarin need other tools. Hand `.so` files to the REA tools
    (`reverse-engineer-anything` skill) and use `read_file` for JS bundles.
-7. **Report**: package, SDKs, frameworks, attack surface, confirmed findings with
+10. **Report**: package, SDKs, frameworks, attack surface, confirmed findings with
    `file:line` evidence and severity, and open questions.
 
 Analyze only apps the user owns or is authorized to test.

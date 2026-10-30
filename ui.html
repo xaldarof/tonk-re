@@ -153,6 +153,18 @@ body.resizing{cursor:col-resize;user-select:none}
 .busy{animation:pulse .8s infinite alternate}
 @keyframes pulse{from{opacity:1}to{opacity:.4}}
 
+#diffModal{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:45;display:none;align-items:center;justify-content:center}
+#diffModal.on{display:flex}
+#diffModal .dlg{width:min(900px,92vw);max-height:86vh;background:var(--panel);border:1px solid var(--dim);
+  box-shadow:0 0 30px rgba(0,0,0,.9);display:flex;flex-direction:column}
+#diffModal h3{margin:0;padding:4px 10px;background:var(--faint);border-bottom:1px solid var(--line);display:flex;align-items:center;color:var(--dim)}
+.diff-sec{color:var(--amber);border-bottom:1px dashed var(--line);margin:10px 0 3px}
+.diff-add{color:var(--fg)} .diff-rm{color:var(--red)} .diff-ch{color:var(--cyan)}
+.intent-card{border:1px solid var(--line);margin:6px 0;padding:4px 8px}
+.intent-card .hd{color:var(--hi)} .intent-card .meta{color:var(--dim);font-size:16px}
+.intent-card input{width:100%;margin:3px 0}
+.badge{font-size:15px;padding:0 4px;border:1px solid var(--dim);color:var(--amber)}
+.badge.open{color:var(--red);border-color:var(--red)}
 #boot{position:fixed;inset:0;background:var(--bg);z-index:40;padding:30px 40px;font-size:22px;white-space:pre-wrap;
   transition:opacity .5s}
 #boot.gone{opacity:0;pointer-events:none}
@@ -199,6 +211,7 @@ body.resizing{cursor:col-resize;user-select:none}
     <button id="bDist" data-p>[ OPEN DIST ]</button>
     <span class="sep">│</span>
     <button id="bResign" class="warn">[ RESIGN APK ]</button>
+    <button id="bDiff">[ DIFF ⇄ ]</button>
   </div>
 
   <section id="side" class="pane">
@@ -222,7 +235,9 @@ body.resizing{cursor:col-resize;user-select:none}
       </div>
       <textarea id="ed"></textarea>
     </div>
-    <div id="edfoot"><span id="fName">-</span><span id="fMode"></span><span id="fPos" style="margin-left:auto"></span>
+    <div id="edfoot"><span id="fName">-</span><span id="fMode"></span>
+      <button id="bCounterpart" style="font-size:16px;padding:0 6px;display:none"></button>
+      <span id="fPos" style="margin-left:auto"></span>
       <button id="bSave" style="font-size:16px;padding:0 6px">[ SAVE ]</button></div>
   </section>
 
@@ -231,6 +246,8 @@ body.resizing{cursor:col-resize;user-select:none}
       <button data-r="info" class="on">INFO</button>
       <button data-r="scan">SCAN</button>
       <button data-r="find">SEARCH</button>
+      <button data-r="intent">INTENT</button>
+      <button data-r="frida">FRIDA</button>
       <button data-r="ai">CLAUDE</button>
     </div>
     <div class="rp on" id="r-info"><div style="color:var(--dim)">&gt; no project loaded<span class="cursor"></span></div></div>
@@ -251,6 +268,27 @@ body.resizing{cursor:col-resize;user-select:none}
       </div>
       <div id="findOut" class="list"></div>
     </div>
+    <div class="rp" id="r-intent">
+      <div style="color:var(--dim)">Exported components &amp; deep links as <b>adb am</b> intents. Needs a device via ADB.</div>
+      <div id="intentOut" class="list"></div>
+    </div>
+    <div class="rp" id="r-frida">
+      <div style="color:var(--dim)">Generate a <b>Frida</b> hook. Fills class from the open file.</div>
+      <div class="row"><input id="fridaCls" placeholder="com.pkg.Class" style="flex:1"></div>
+      <div class="row"><input id="fridaMethod" placeholder="method (blank = all methods)" style="flex:1"></div>
+      <div class="row">
+        <select id="fridaTpl" style="flex:1">
+          <option value="trace">trace method (args + return)</option>
+          <option value="trace_class">trace whole class</option>
+          <option value="stacktrace">trace + stacktrace</option>
+          <option value="return">override return value</option>
+          <option value="ssl_bypass">SSL pinning bypass</option>
+          <option value="root_bypass">root-detection bypass</option>
+        </select>
+        <button id="bFrida" data-p>[ GENERATE ]</button>
+      </div>
+      <div id="fridaOut" class="list"></div>
+    </div>
     <div class="rp" id="r-ai">
       <div id="chat"><span class="t">claude@tonk-re:~$ ask anything about the decompiled app.
 claude can read and grep the project (read-only).
@@ -267,6 +305,19 @@ select code in the editor to send it as context.</span></div>
     <h3>// CONSOLE <button id="bClr">[ CLEAR ]</button></h3>
     <pre id="log"></pre>
   </section>
+</div>
+
+<div id="diffModal">
+  <div class="dlg">
+    <h3>// DIFF TWO VERSIONS <button id="diffClose" style="margin-left:auto;border:none">[ X ]</button></h3>
+    <div class="row" style="padding:10px">
+      <select id="diffA" style="flex:1"></select>
+      <span style="color:var(--amber)">⇄</span>
+      <select id="diffB" style="flex:1"></select>
+      <button id="bRunDiff">[ COMPARE ]</button>
+    </div>
+    <div id="diffOut" class="list" style="padding:0 12px 12px;overflow:auto"></div>
+  </div>
 </div>
 
 <script>
@@ -398,7 +449,9 @@ $("#proj").onchange = e => openProject(e.target.value);
 async function openProject(p) {
   project = p; files = {}; current = null; renderTabs(); showEmpty(true);
   $("#sProj").textContent = p || "none"; setButtons();
-  $("#tree").innerHTML = "";
+  $("#tree").innerHTML = ""; $("#bCounterpart").style.display = "none";
+  $("#intentOut").innerHTML = ""; delete $("#intentOut").dataset.loaded;
+  $("#fridaOut").innerHTML = ""; $("#fridaCls").value = ""; $("#fridaMethod").value = "";
   if (!p) return;
   await renderDir($("#tree"), "");
   loadInfo();
@@ -482,7 +535,24 @@ async function openFile(path, line) {
   $$(".node.active").forEach(n => n.classList.remove("active"));
   const n = $(`.node[data-path="${CSS.escape(path)}"]`); n && n.classList.add("active");
   renderTabs();
+  updateCounterpart(path);
   if (line) jump(line);
+}
+// Java <-> smali linking: footer button jumps to the other representation
+async function updateCounterpart(path) {
+  const btn = $("#bCounterpart");
+  btn.style.display = "none";
+  if (!/\.(java|smali)$/.test(path)) return;
+  btn.textContent = path.endsWith(".java") ? "[ EDIT SMALI ▸ ]" : "[ ◂ VIEW JAVA ]";
+  btn.style.display = "";
+  btn.onclick = async () => {
+    try {
+      const r = await get("/api/counterpart", {project, path});
+      if (!r.paths || !r.paths.length) return log(`[!] no ${r.kind} counterpart for ${r.class}`);
+      for (const p of r.paths) await openFile(p);  // opens inner classes too
+      if (r.kind === "smali") log(`[*] editing smali for ${r.class} — patch it, then BUILD+SIGN`);
+    } catch (e) { log("[-] " + e.message); }
+  };
 }
 function jump(line) {
   const l = line - 1;
@@ -521,7 +591,113 @@ async function saveAll() { for (const p of Object.keys(files)) if (files[p].dirt
 $$("#rtabs button").forEach(b => b.onclick = () => {
   $$("#rtabs button").forEach(x => x.classList.toggle("on", x === b));
   $$(".rp").forEach(x => x.classList.toggle("on", x.id === "r-" + b.dataset.r));
+  if (b.dataset.r === "intent" && project && !$("#intentOut").dataset.loaded) loadIntents();
+  if (b.dataset.r === "frida") prefillFrida();
 });
+
+// ---------- intent / deep-link tester ----------
+const AM_LABEL = {activity: "am start", "activity-alias": "am start", service: "am start-fg-service", receiver: "am broadcast"};
+async function loadIntents() {
+  const el = $("#intentOut");
+  el.innerHTML = `<span class="busy">&gt; parsing exported components...</span>`;
+  let d;
+  try { d = await get("/api/intents", {project}); } catch (e) { el.textContent = e.message; return; }
+  el.dataset.loaded = "1";
+  if (!d.components.length) { el.innerHTML = `<span class="ok">no exported components</span>`; return; }
+  el.innerHTML = d.components.map((c, i) => {
+    const open = !c.permission;
+    const uri = c.deep_links[0] || "";
+    return `<div class="intent-card" data-i="${i}">
+      <div class="hd"><span class="badge ${open ? "open" : ""}">${c.type}</span> ${esc(c.component.split("/")[1])}
+        <span class="meta">${AM_LABEL[c.type]}</span></div>
+      <div class="meta">${esc(c.exploitable_note)}${c.actions.length ? " · action: " + esc(c.actions[0]) : ""}</div>
+      ${c.type === "activity" || c.type === "activity-alias"
+        ? `<input class="i-data" placeholder="data URI (e.g. ${esc(uri || "scheme://host")})" value="${esc(uri)}">` : ""}
+      <input class="i-extra" placeholder="extras: key=value key2=value2 (strings)">
+      <div class="row"><button class="i-run" data-p>[ RUN ▸ ADB ]</button><button class="i-copy">[ COPY CMD ]</button></div>
+    </div>`;
+  }).join("");
+  el.querySelectorAll(".intent-card").forEach((card, i) => {
+    const c = d.components[i];
+    const body = () => {
+      const data = (card.querySelector(".i-data") || {}).value || "";
+      const extras = ((card.querySelector(".i-extra").value || "").match(/\S+=\S+/g) || [])
+        .map(kv => { const [k, ...v] = kv.split("="); return {type: "s", key: k, value: v.join("=")}; });
+      return {project, kind: c.type, component: c.component, action: c.actions[0] || "", data, extras};
+    };
+    card.querySelector(".i-run").onclick = e => run("intent", body(), e.currentTarget);
+    card.querySelector(".i-copy").onclick = () => {
+      const b = body();
+      let cmd = `adb shell am ${c.am_cmd} -n ${c.component}`;
+      if (b.action) cmd += ` -a ${b.action}`;
+      if (b.data) cmd += ` -d "${b.data}"`;
+      b.extras.forEach(x => cmd += ` --es ${x.key} "${x.value}"`);
+      navigator.clipboard.writeText(cmd); log(`[*] copied: ${cmd}`);
+    };
+  });
+}
+
+// ---------- frida ----------
+function prefillFrida() {
+  if (current && /\.(java|smali)$/.test(current) && !$("#fridaCls").value) {
+    const base = current.replace(/^(jadx\/sources|apktool\/smali[^/]*)\//, "").replace(/\.(java|smali)$/, "");
+    $("#fridaCls").value = base.replace(/\//g, ".").split("$")[0];
+  }
+}
+$("#bFrida").onclick = async e => {
+  const btn = e.currentTarget; btn.classList.add("busy");
+  try {
+    const r = await post("/api/frida", {project, class: $("#fridaCls").value.trim(),
+      method: $("#fridaMethod").value.trim(), template: $("#fridaTpl").value});
+    delete files[r.path];  // force reload from disk
+    await openFile(r.path);
+    $("#fridaOut").innerHTML = `<span class="ok">saved ${esc(r.path)}</span>
+      <div class="sec">// SPAWN</div><span class="hit" data-cmd="${esc(r.spawn_cmd)}">${esc(r.spawn_cmd)}</span>
+      <div class="sec">// ATTACH</div><span class="hit" data-cmd="${esc(r.attach_cmd)}">${esc(r.attach_cmd)}</span>`;
+    $("#fridaOut").querySelectorAll("[data-cmd]").forEach(h => h.onclick = () => {
+      navigator.clipboard.writeText(h.dataset.cmd); log("[*] copied: " + h.dataset.cmd); });
+    log(`[+] frida script -> ${r.path}`);
+  } catch (e) { $("#fridaOut").textContent = e.message; }
+  btn.classList.remove("busy");
+};
+
+// ---------- version diff ----------
+$("#bDiff").onclick = async () => {
+  const ps = await get("/api/projects");
+  if (ps.length < 2) return log("[!] decompile at least two APKs to diff");
+  const opts = ps.map(p => `<option value="${p.project}">${esc(p.package || p.project)} [${p.project.slice(-10)}]</option>`).join("");
+  $("#diffA").innerHTML = opts; $("#diffB").innerHTML = opts;
+  if (project) $("#diffA").value = project;
+  $("#diffB").selectedIndex = Math.min(1, ps.length - 1);
+  $("#diffOut").innerHTML = ""; $("#diffModal").classList.add("on");
+};
+$("#diffClose").onclick = () => $("#diffModal").classList.remove("on");
+$("#diffModal").onclick = e => { if (e.target.id === "diffModal") $("#diffModal").classList.remove("on"); };
+$("#bRunDiff").onclick = async () => {
+  const a = $("#diffA").value, b = $("#diffB").value;
+  if (a === b) return log("[!] pick two different versions");
+  $("#diffOut").innerHTML = `<span class="busy">&gt; diffing...</span>`;
+  let d;
+  try { d = await get("/api/diff", {a, b}); } catch (e) { $("#diffOut").textContent = e.message; return; }
+  const sec = (t) => `<div class="diff-sec">${t}</div>`;
+  const list = (arr, cls, pre) => arr.length ? arr.map(x => `<span class="${cls}">${pre}${esc(x)}</span>`).join("\n") : "";
+  const block = (title, o, pre = "") => {
+    const a = list(o.added || [], "diff-add", "+ " + pre), r = list(o.removed || [], "diff-rm", "− " + pre);
+    const c = o.changed ? list(o.changed, "diff-ch", "~ " + pre) : "";
+    return (a || r || c) ? sec(title) + [a, r, c].filter(Boolean).join("\n") : "";
+  };
+  let h = `<div class="kv"><span>A</span><span>${esc(d.a.version)}</span><span>B</span><span>${esc(d.b.version)}</span>
+    <span>SDK</span><span>${esc(d.sdk.a)} → ${esc(d.sdk.b)}</span></div>`;
+  h += block("PERMISSIONS", d.permissions);
+  h += block("EXPORTED COMPONENTS", d.exported_components);
+  h += block("FRAMEWORKS", d.frameworks);
+  h += block(`CLASSES (${d.classes.changed_count} changed)`, d.classes);
+  h += block("URLS / ENDPOINTS", d.urls);
+  const fc = Object.entries(d.flag_changes || {});
+  if (fc.length) h += sec("SECURITY FLAGS") + fc.map(([k, v]) => `<span class="diff-ch">~ ${k}: ${v[0]} → ${v[1]}</span>`).join("\n");
+  $("#diffOut").innerHTML = h || "<span class='ok'>identical</span>";
+  log(`[+] diff ${a} ⇄ ${b} done`);
+};
 
 const DANGER = /(READ|WRITE)_(SMS|CONTACTS|CALL_LOG|EXTERNAL_STORAGE)|RECORD_AUDIO|CAMERA|ACCESS_(FINE|BACKGROUND)_LOCATION|SYSTEM_ALERT_WINDOW|BIND_ACCESSIBILITY|REQUEST_INSTALL|QUERY_ALL_PACKAGES|MANAGE_EXTERNAL/;
 async function loadInfo() {
@@ -630,7 +806,7 @@ $("#ask").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDe
   try { t = await get("/api/tools"); } catch {}
   const st = (n, v) => `CHECKING ${n.padEnd(10, ".")} ${v ? "[ OK ]" : "[MISSING]"}`;
   lines.push(st("jadx", t.jadx), st("apktool", t.apktool), st("apksigner", t.apksigner), st("zipalign", t.zipalign),
-             st("adb", t.adb), st("claude", t.claude), "", "LOADING TERMINAL...");
+             st("adb", t.adb), st("frida", t.frida), st("claude", t.claude), "", "LOADING TERMINAL...");
   for (const l of lines) { boot.textContent += l + "\n"; await new Promise(r => setTimeout(r, 70)); }
   $("#sTools").innerHTML = ["apksigner", "zipalign", "adb"].map(k => `<span class="${t[k] ? "" : "bad"}">${k}${t[k] ? "✓" : "✗"}</span>`).join(" ");
   setTimeout(() => boot.classList.add("gone"), 350);

@@ -445,11 +445,316 @@ def signing_info(project: str) -> str:
     return out
 
 
+# ---------- intent / deep-link tester ----------
+
+def _fqcn(package: str, name: str) -> str:
+    """Resolve a manifest component name ('.Foo' / 'Foo' / 'com.x.Foo') to fully-qualified."""
+    if not name:
+        return name
+    if name.startswith("."):
+        return package + name
+    return name if "." in name else f"{package}.{name}"
+
+
+def intents(project: str) -> dict:
+    """Enumerate launchable adb intents for every exported component and deep link."""
+    proj = _project_dir(project)
+    root = _manifest_root(proj)
+    pkg = root.get("package")
+    app = root.find("application")
+    am = {"activity": "start", "activity-alias": "start", "service": "start-foreground-service",
+          "receiver": "broadcast"}
+    comps = []
+    for kind in ("activity", "activity-alias", "service", "receiver"):
+        for el in (app.findall(kind) if app is not None else []):
+            name = _a(el, "name")
+            has_filter = el.find("intent-filter") is not None
+            exp = _a(el, "exported")
+            if not (exp == "true" or (exp is None and has_filter)):
+                continue
+            comp = f"{pkg}/{name}"  # adb accepts pkg/.Rel directly
+            actions = [_a(a, "name") for a in el.iter("action")
+                       if _a(a, "name") != "android.intent.action.MAIN"]
+            cats = [_a(c, "name") for c in el.iter("category")
+                    if _a(c, "name") not in ("android.intent.category.LAUNCHER",
+                                             "android.intent.category.DEFAULT")]
+            # build deep-link URIs from <data> elements
+            links = []
+            for d in el.iter("data"):
+                scheme, host = _a(d, "scheme"), _a(d, "host")
+                path = _a(d, "path") or _a(d, "pathPrefix") or ""
+                if scheme:
+                    uri = f"{scheme}://{host or 'HOST'}{path}"
+                    if uri not in links:
+                        links.append(uri)
+            comps.append({
+                "type": kind, "am_cmd": am[kind], "component": comp,
+                "fqcn": _fqcn(pkg, name), "permission": _a(el, "permission"),
+                "actions": actions, "categories": cats, "deep_links": links,
+                "exploitable_note": ("no-permission; callable by any app" if not _a(el, "permission")
+                                     else f"guarded by {_a(el, 'permission')}"),
+            })
+    return {"package": pkg, "components": comps}
+
+
+def build_am(kind: str, component: str, action: str = "", data: str = "", categories: list | None = None,
+             mime: str = "", extras: list | None = None, flags: list | None = None) -> list[str]:
+    """Build the `adb shell am ...` argv for an intent. extras: [{type,key,value}]."""
+    sub = {"activity": "start", "activity-alias": "start", "service": "start-foreground-service",
+           "receiver": "broadcast"}.get(kind, "start")
+    cmd = ["shell", "am", sub, "-n", component]
+    if sub == "start":
+        cmd += ["-W"]  # wait + print result
+    if action:
+        cmd += ["-a", action]
+    if data:
+        cmd += ["-d", data]
+    for c in (categories or []):
+        cmd += ["-c", c]
+    if mime:
+        cmd += ["-t", mime]
+    opt = {"s": "--es", "string": "--es", "i": "--ei", "int": "--ei", "l": "--el", "long": "--el",
+           "z": "--ez", "bool": "--ez", "f": "--ef", "float": "--ef", "uri": "--eu"}
+    for e in (extras or []):
+        flag = opt.get(str(e.get("type", "s")).lower(), "--es")
+        cmd += [flag, str(e["key"]), str(e["value"])]
+    cmd += (flags or [])
+    return cmd
+
+
+# ---------- version diff ----------
+
+def _class_set(proj: Path) -> set[str]:
+    src = proj / "jadx" / "sources"
+    return {p.relative_to(src).as_posix()[:-5].replace("/", ".") for p in src.rglob("*.java")} \
+        if src.exists() else set()
+
+
+def diff_versions(project_a: str, project_b: str, max_items: int = 400) -> dict:
+    """Compare two decompiled projects: manifest, permissions, components, classes, URLs."""
+    pa, pb = _project_dir(project_a), _project_dir(project_b)
+    ia, ib = info(project_a), info(project_b)
+
+    def addrm(a: set, b: set):
+        return {"added": sorted(b - a)[:max_items], "removed": sorted(a - b)[:max_items]}
+
+    # changed classes: present in both, different source hash
+    ca, cb = _class_set(pa), _class_set(pb)
+    changed = []
+    srca, srcb = pa / "jadx" / "sources", pb / "jadx" / "sources"
+    for cls in sorted(ca & cb):
+        rel = cls.replace(".", "/") + ".java"
+        fa, fb = srca / rel, srcb / rel
+        try:
+            if fa.read_bytes() != fb.read_bytes():
+                changed.append(cls)
+        except OSError:
+            pass
+        if len(changed) >= max_items:
+            break
+
+    exp = lambda i: {f"{c['type']}:{c['name']}" for c in i["exported_components"]}
+    urls = lambda p, proj: set(re.findall(URL_RE, "\n".join(_grep(p, URL_RE, ["!*.so", "!*.dex", "!*.smali"], 4000))))
+    ua, ub = urls(pa, project_a), urls(pb, project_b)
+
+    return {
+        "a": {"project": project_a, "version": f"{ia.get('versionName')} ({ia.get('versionCode')})"},
+        "b": {"project": project_b, "version": f"{ib.get('versionName')} ({ib.get('versionCode')})"},
+        "sdk": {"a": f"{ia.get('minSdkVersion')}/{ia.get('targetSdkVersion')}",
+                "b": f"{ib.get('minSdkVersion')}/{ib.get('targetSdkVersion')}"},
+        "permissions": addrm(set(ia["permissions"]), set(ib["permissions"])),
+        "exported_components": addrm(exp(ia), exp(ib)),
+        "frameworks": addrm(set(ia.get("frameworks", [])), set(ib.get("frameworks", []))),
+        "classes": addrm(ca, cb) | {"changed": changed, "changed_count": len(changed)},
+        "urls": addrm(ua, ub),
+        "flag_changes": {k: [ia["application"].get(k), ib["application"].get(k)]
+                         for k in ("debuggable", "allowBackup", "usesCleartextTraffic", "networkSecurityConfig")
+                         if ia["application"].get(k) != ib["application"].get(k)},
+    }
+
+
+# ---------- Frida script generator ----------
+
+FRIDA_PRELUDE = """// Generated by tonk-re. Run:  frida -U -f %PKG% -l %FILE% --no-pause
+// (attach to a running app instead:  frida -U %PKG% -l %FILE%)
+function stringify(v) {
+  try { if (v === null || v === undefined) return "" + v;
+    if (typeof v === "object") return Java.use("java.util.Objects").toString(v); return "" + v;
+  } catch (e) { return "<?>"; }
+}
+"""
+
+
+def frida_script(project: str, class_name: str = "", method: str = "", template: str = "trace") -> dict:
+    pkg = info(project).get("package", "com.example.app")
+    cls = class_name.strip()
+    short = cls.rsplit(".", 1)[-1] if cls else "target"
+
+    if template == "ssl_bypass":
+        body = _FRIDA_SSL
+    elif template == "root_bypass":
+        body = _FRIDA_ROOT
+    elif not cls:
+        body = '  console.log("[!] set a class name for this template");'
+    elif template == "trace_class" or not method:
+        body = f'''  var C = Java.use("{cls}");
+  C.class.getDeclaredMethods().forEach(function (m) {{
+    var name = m.getName();
+    try {{
+      C[name].overloads.forEach(function (ov) {{
+        ov.implementation = function () {{
+          var a = [].slice.call(arguments);
+          console.log("[>] {short}." + name + "(" + a.map(stringify).join(", ") + ")");
+          var r = ov.apply(this, arguments);
+          console.log("[<] {short}." + name + " => " + stringify(r));
+          return r;
+        }};
+      }});
+    }} catch (e) {{}}
+  }});
+  console.log("[*] hooked all methods of {cls}");'''
+    elif template == "return":
+        body = f'''  var C = Java.use("{cls}");
+  C.{method}.overloads.forEach(function (ov) {{
+    ov.implementation = function () {{
+      console.log("[!] {short}.{method} forced return (edit the value below)");
+      return ov.apply(this, arguments);   // <-- replace with e.g. true / 0 / "str"
+    }};
+  }});'''
+    else:  # trace a single method
+        body = f'''  var C = Java.use("{cls}");
+  C.{method}.overloads.forEach(function (ov) {{
+    ov.implementation = function () {{
+      var a = [].slice.call(arguments);
+      console.log("[>] {short}.{method}(" + a.map(stringify).join(", ") + ")");
+      if ({str(template == 'stacktrace').lower()})
+        console.log(Java.use("android.util.Log").getStackTraceString(Java.use("java.lang.Exception").$new()));
+      var r = ov.apply(this, arguments);
+      console.log("[<] {short}.{method} => " + stringify(r));
+      return r;
+    }};
+  }});'''
+
+    script = FRIDA_PRELUDE + "\nJava.perform(function () {\n" + body + "\n});\n"
+    fdir = _project_dir(project) / "frida"
+    fdir.mkdir(exist_ok=True)
+    fname = f"{template}_{short}.js" if cls else f"{template}.js"
+    fpath = fdir / re.sub(r"[^A-Za-z0-9_.]", "_", fname)
+    fpath.write_text(script, encoding="utf-8")
+    rel = fpath.relative_to(_project_dir(project)).as_posix()
+    return {"path": rel, "package": pkg, "script": script,
+            "spawn_cmd": f"frida -U -f {pkg} -l {fpath} --no-pause",
+            "attach_cmd": f"frida -U {pkg} -l {fpath}"}
+
+
+_FRIDA_SSL = '''  // Universal-ish SSL pinning bypass (TrustManager + OkHttp CertificatePinner)
+  try {
+    var TMF = Java.use("javax.net.ssl.TrustManagerFactory");
+    var TM = Java.registerClass({name: "com.tonkre.TrustAll",
+      implements: [Java.use("javax.net.ssl.X509TrustManager")],
+      methods: {checkClientTrusted: function () {}, checkServerTrusted: function () {},
+        getAcceptedIssuers: function () { return []; }}});
+    var ctx = Java.use("javax.net.ssl.SSLContext");
+    ctx.init.overload("[Ljavax.net.ssl.KeyManager;", "[Ljavax.net.ssl.TrustManager;",
+      "java.security.SecureRandom").implementation = function (k, t, r) {
+      this.init(k, [TM.$new()], r); console.log("[*] SSLContext.init bypassed");
+    };
+  } catch (e) { console.log("[!] TM hook: " + e); }
+  try {
+    var CP = Java.use("okhttp3.CertificatePinner");
+    CP.check.overload("java.lang.String", "java.util.List").implementation = function () {
+      console.log("[*] OkHttp CertificatePinner.check bypassed"); };
+  } catch (e) {}
+  console.log("[*] SSL pinning bypass installed");'''
+
+_FRIDA_ROOT = '''  // Common root-detection bypass
+  try {
+    var F = Java.use("java.io.File");
+    F.exists.implementation = function () {
+      var p = this.getAbsolutePath();
+      if (/su|magisk|supersu|busybox/i.test(p)) { console.log("[*] hid " + p); return false; }
+      return this.exists();
+    };
+  } catch (e) {}
+  try {
+    var RT = Java.use("java.lang.Runtime");
+    RT.exec.overload("java.lang.String").implementation = function (c) {
+      if (/\\bsu\\b|which su/.test(c)) { console.log("[*] blocked exec: " + c);
+        return this.exec("echo"); }
+      return this.exec(c);
+    };
+  } catch (e) {}
+  console.log("[*] root-detection bypass installed");'''
+
+
+# ---------- Java <-> smali linking ----------
+
+def smali_paths(project: str, class_name: str) -> list[str]:
+    """smali file(s) for a Java class (multidex + inner classes), as project-relative posix paths."""
+    proj = _project_dir(project)
+    base = class_name.split("$")[0].replace(".", "/")
+    found = []
+    for d in sorted(proj.glob("apktool/smali*")):
+        main = d / (base + ".smali")
+        if main.is_file():
+            found.append(main)
+            found += sorted((d / base).parent.glob(Path(base).name + "$*.smali"))
+    return [p.relative_to(proj).as_posix() for p in found]
+
+
+def counterpart(project: str, path: str) -> dict:
+    """Map a java file <-> its smali file(s). Returns the other side's project-relative path(s)."""
+    proj = _project_dir(project)
+    if path.endswith(".java") and "jadx/sources/" in path:
+        cls = path.split("jadx/sources/", 1)[1][:-5].replace("/", ".")
+        return {"kind": "smali", "paths": smali_paths(project, cls), "class": cls}
+    if path.endswith(".smali"):
+        rel = re.sub(r"^apktool/smali[^/]*/", "", path)[:-6]  # strip dir + .smali
+        cls = rel.split("$")[0].replace("/", ".")
+        jf = proj / "jadx" / "sources" / (rel.split("$")[0] + ".java")
+        return {"kind": "java", "paths": [jf.relative_to(proj).as_posix()] if jf.is_file() else [], "class": cls}
+    return {"kind": None, "paths": []}
+
+
+# ---------- MCP tools (extensions) ----------
+
+@mcp.tool()
+def list_intents(project: str) -> str:
+    """List exported components and deep links as ready-to-run `adb shell am` intents. Use for
+    attack-surface testing of activities/services/receivers and scheme://host deep links."""
+    return _truncate(json.dumps(intents(project), indent=2))
+
+
+@mcp.tool()
+def diff_apks(project_a: str, project_b: str) -> str:
+    """Diff two decompiled versions: version, permissions, exported components, classes (added/
+    removed/changed), URLs, frameworks and security-flag changes. Pass two project names."""
+    return _truncate(json.dumps(diff_versions(project_a, project_b), indent=2))
+
+
+@mcp.tool()
+def generate_frida_hook(project: str, class_name: str = "", method: str = "", template: str = "trace") -> str:
+    """Generate a Frida hook script and save it under the project. templates: 'trace' (log one
+    method's args/return), 'trace_class' (all methods of a class), 'stacktrace', 'return' (stub to
+    override a return value), 'ssl_bypass', 'root_bypass'. Returns the script and run commands."""
+    return _truncate(json.dumps(frida_script(project, class_name, method, template), indent=2))
+
+
+@mcp.tool()
+def smali_for_class(project: str, class_name: str) -> str:
+    """Return the smali file path(s) for a Java class (multidex + inner classes). Edit smali, then
+    BUILD, to patch app behavior (jadx Java is read-only; apktool rebuilds from smali)."""
+    paths = smali_paths(project, class_name)
+    return "\n".join(paths) if paths else f"No smali found for {class_name}."
+
+
 # ---------- CLI ----------
 
 def cli(argv: list[str]) -> None:
     usage = ("usage: tonkre <decompile APK [--force] [--deobf] | info PROJECT | projects | "
-             "search PROJECT REGEX [scope] | secrets PROJECT | urls PROJECT | security PROJECT>")
+             "search PROJECT REGEX [scope] | secrets PROJECT | urls PROJECT | security PROJECT | "
+             "intents PROJECT | diff PROJECT_A PROJECT_B | frida PROJECT [CLASS] [METHOD] [TEMPLATE] | "
+             "smali PROJECT CLASS>")
     if not argv:
         sys.exit(usage)
     cmd, *rest = argv
@@ -468,6 +773,16 @@ def cli(argv: list[str]) -> None:
         print(find_urls(rest[0]))
     elif cmd == "security" and rest:
         print(find_crypto_and_security(rest[0]))
+    elif cmd == "intents" and rest:
+        print(list_intents(rest[0]))
+    elif cmd == "diff" and len(rest) >= 2:
+        print(diff_apks(rest[0], rest[1]))
+    elif cmd == "frida" and rest:
+        print(frida_script(rest[0], rest[1] if len(rest) > 1 else "",
+                           rest[2] if len(rest) > 2 else "",
+                           rest[3] if len(rest) > 3 else "trace")["script"])
+    elif cmd == "smali" and len(rest) >= 2:
+        print(smali_for_class(rest[0], rest[1]))
     else:
         sys.exit(usage)
 

@@ -24,6 +24,10 @@ Runs on **macOS**, **Windows** and **Linux**.
 - **Code editor** with syntax highlighting for Java, smali, XML, JSON, JS and YAML. Tabs, find (`⌘F`), go-to-line (`⌥G`), and editable smali/resources.
 - **Security sweeps** — one click each for hard-coded secrets (Google/AWS/Stripe/GitHub/Slack keys, JWTs, private keys), URLs/endpoints, and risky API usage (weak crypto, TLS trust overrides, WebView JS bridges, dynamic code loading, root/Frida detection, raw SQL…).
 - **Regex search** across Java, smali or resources — click any hit to jump to the exact line.
+- **Deep-link / intent tester** — every exported activity/service/receiver and `scheme://host` deep link rendered as a ready-to-fire `adb am` intent, with editable data URI and extras; run it on a connected device or copy the command. No-permission (callable-by-any-app) components are flagged in red.
+- **Version diff** — pick two decompiled versions and see added/removed permissions and exported components, added/removed/**changed** classes, added/removed endpoints, framework changes and security-flag flips.
+- **Frida hook generator** — generate a hook script for a method or whole class (trace args/return, stacktrace, override a return value) or a universal SSL-pinning / root-detection bypass; saved into the project with ready `frida` spawn/attach commands.
+- **Java ⇄ smali bridge** — read a class in clean decompiled Java, then jump straight to its smali (multidex- and inner-class-aware) to patch it and rebuild.
 - **Rebuild & sign** — `BUILD` (apktool), `SIGN` (zipalign + apksigner v1–v3), `BUILD+SIGN`, `INSTALL ▸ ADB`, and `RESIGN APK` for any existing APK. A debug keystore is generated automatically.
 - **Ask Claude** — a built-in chat panel runs the `claude` CLI read-only inside the project, with your editor selection as context, and links file:line references straight into the editor.
 - **MCP server** — the same engine is exposed to Claude Code as the `tonk-re` tool set, so you can decompile and audit from any `claude` session.
@@ -39,9 +43,13 @@ Runs on **macOS**, **Windows** and **Linux**.
 |---|---|
 | ![security](docs/screenshots/security-scan.png) | ![build and sign](docs/screenshots/build-sign.png) |
 
-| Amber phosphor mode | Boot sequence |
+| Deep-link / intent tester | Version diff |
 |---|---|
-| ![amber](docs/screenshots/amber.png) | ![boot](docs/screenshots/boot.png) |
+| ![intent tester](docs/screenshots/intent.png) | ![version diff](docs/screenshots/diff.png) |
+
+| Frida hook generator | Amber phosphor mode |
+|---|---|
+| ![frida](docs/screenshots/frida.png) | ![amber](docs/screenshots/amber.png) |
 
 ## Requirements
 
@@ -52,6 +60,7 @@ Runs on **macOS**, **Windows** and **Linux**.
 | [jadx](https://github.com/skylot/jadx) | Java/Kotlin decompiler | `brew install jadx` | `scoop install jadx` | [releases](https://github.com/skylot/jadx/releases) |
 | [apktool](https://apktool.org) | resources + smali | `brew install apktool` | `scoop install apktool` | `sudo apt install apktool` |
 | Android SDK build-tools + platform-tools | `apksigner`, `zipalign`, `adb` | Android Studio ▸ SDK Manager (auto-detected) | same | same |
+| [frida](https://frida.re) (optional) | *running* generated hooks (generation needs nothing) | `pipx install frida-tools` | `pipx install frida-tools` | `pipx install frida-tools` |
 | Chrome / Edge / Brave / Chromium | app-window mode (optional) | optional | Edge is built in | optional |
 | zenity *or* kdialog | the `BROWSE` file dialog | built in | built in | `sudo apt install zenity` |
 
@@ -131,6 +140,10 @@ tonkre secrets  <project>              # hard-coded secrets
 tonkre urls     <project>              # endpoints
 tonkre security <project>              # crypto / security findings
 tonkre search   <project> <regex> [java|smali|resources|all]
+tonkre intents  <project>              # exported components + deep links as adb am intents
+tonkre diff      <project_a> <project_b>   # diff two decompiled versions
+tonkre frida    <project> [class] [method] [template]   # print a Frida hook script
+tonkre smali    <project> <class>      # smali path(s) for a Java class
 ```
 
 ### With Claude Code
