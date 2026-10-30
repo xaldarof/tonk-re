@@ -26,6 +26,11 @@ from pathlib import Path
 import defusedxml.ElementTree as ET
 from mcp.server.fastmcp import FastMCP
 
+sys.path.insert(0, str(Path(__file__).parent))
+import tools  # noqa: E402
+
+tools.activate()  # managed ~/.tonkre/tools (jadx, apktool, JDK, SDK) onto PATH for every subprocess
+
 WORKSPACE = Path(os.environ.get("TONKRE_HOME", Path.home() / ".tonkre")) / "projects"
 ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
 MAX_OUT = 60_000  # chars returned per tool call, keeps Claude's context sane
@@ -754,11 +759,13 @@ def cli(argv: list[str]) -> None:
     usage = ("usage: tonkre <decompile APK [--force] [--deobf] | info PROJECT | projects | "
              "search PROJECT REGEX [scope] | secrets PROJECT | urls PROJECT | security PROJECT | "
              "intents PROJECT | diff PROJECT_A PROJECT_B | frida PROJECT [CLASS] [METHOD] [TEMPLATE] | "
-             "smali PROJECT CLASS>")
+             "smali PROJECT CLASS | setup [status|all|COMPONENT...] [--accept-android-license]>")
     if not argv:
         sys.exit(usage)
     cmd, *rest = argv
-    if cmd == "decompile" and rest:
+    if cmd == "setup":
+        tools.cli(rest)
+    elif cmd == "decompile" and rest:
         r = decompile(rest[0], force="--force" in rest, deobf="--deobf" in rest)
         print(json.dumps(r, indent=2))
     elif cmd == "info" and rest:

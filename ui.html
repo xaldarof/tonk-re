@@ -47,7 +47,7 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:51;
 ::-webkit-scrollbar-thumb{background:var(--line);border:1px solid var(--dim)}
 
 #app{display:grid;height:100vh;grid-template-rows:auto auto 1fr 190px;
-  grid-template-columns:var(--side-w,280px) 1fr 420px;
+  grid-template-columns:var(--side-w,280px) 1fr var(--right-w,420px);
   grid-template-areas:"hdr hdr hdr" "bar bar bar" "side main right" "con con con";}
 header{grid-area:hdr;display:flex;align-items:center;gap:18px;padding:4px 12px;border-bottom:1px solid var(--line)}
 header pre{margin:0;font-size:10px;line-height:10px;color:var(--fg)}
@@ -123,7 +123,8 @@ body.resizing{cursor:col-resize;user-select:none}
 .CodeMirror-dialog input{color:var(--fg);font-family:'IBM Plex Mono'}
 .CodeMirror-searching{background:rgba(255,176,0,.35)}
 
-#right{grid-area:right;border-right:none}
+#right{grid-area:right;border-right:none;position:relative}
+#right .resizer{right:auto;left:-3px}
 #rtabs{display:flex;border-bottom:1px solid var(--line)}
 #rtabs button{border:none;border-right:1px solid var(--line);flex:1;color:var(--dim)}
 #rtabs button.on{background:var(--fg);color:var(--bg);text-shadow:none}
@@ -155,8 +156,15 @@ body.resizing{cursor:col-resize;user-select:none}
 .busy{animation:pulse .8s infinite alternate}
 @keyframes pulse{from{opacity:1}to{opacity:.4}}
 
-#setup{position:fixed;bottom:200px;right:16px;max-width:440px;z-index:44;background:var(--panel);
-  border:1px solid var(--amber);box-shadow:0 0 20px rgba(0,0,0,.8);padding:8px 12px;font-size:17px}
+#setup{position:fixed;bottom:200px;right:16px;width:min(580px,94vw);max-height:72vh;overflow:auto;z-index:44;
+  background:var(--panel);border:1px solid var(--amber);box-shadow:0 0 20px rgba(0,0,0,.8);padding:8px 12px;font-size:17px}
+#setup .srow{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:start;margin:4px 0}
+#setup .srow button{font-size:16px}
+#setup .lic{flex-wrap:wrap;margin:8px 0 2px;color:var(--amber)} #setup .lic a{color:var(--hi)}
+#setup .lic.need{animation:pulse .4s 4 alternate}
+#setup pre{max-height:180px;overflow:auto;white-space:pre-wrap;font-family:'IBM Plex Mono';font-size:11px;
+  color:var(--dim);border:1px solid var(--line);padding:4px;margin:4px 0}
+#setup .sfoot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px}
 #setup[hidden]{display:none}
 #setup h4{margin:0 0 4px;color:var(--amber);font-weight:normal;display:flex;align-items:center}
 #setup h4 button{margin-left:auto;border:none;font-size:15px;padding:0 4px}
@@ -221,6 +229,7 @@ body.resizing{cursor:col-resize;user-select:none}
     <span class="sep">│</span>
     <button id="bResign" class="warn">[ RESIGN APK ]</button>
     <button id="bDiff">[ DIFF ⇄ ]</button>
+    <button id="bSetup" title="Install / check jadx, apktool, JDK, Android tools, frida">[ SETUP ⚙ ]</button>
   </div>
 
   <div id="setup" hidden></div>
@@ -253,6 +262,7 @@ body.resizing{cursor:col-resize;user-select:none}
   </section>
 
   <section id="right" class="pane">
+    <div class="resizer" id="rightResize" title="Drag to resize · double-click to reset"></div>
     <div id="rtabs">
       <button data-r="info" class="on">INFO</button>
       <button data-r="scan">SCAN</button>
@@ -313,11 +323,14 @@ body.resizing{cursor:col-resize;user-select:none}
           <button id="bPpReset" style="font-size:16px;padding:0 6px">[ RESET DEFAULT ]</button></div>
       </div>
       <div id="chat"><span class="t">claude@tonk-re:~$ ask anything about the decompiled app.
-claude can read and grep the project (read-only), and remembers the conversation.
+claude can read and grep the project, and remembers the conversation. tick WRITE to let it
+create/edit files (only in the project folder and ~/Downloads).
 select code in the editor to send it as context. [ NEW SESSION ] starts fresh.</span></div>
       <textarea id="ask" placeholder="e.g. how does the login request get signed? where is the API key used?"></textarea>
       <div class="row">
         <label class="chk"><input type="checkbox" id="withSel" checked>SEND SELECTION</label>
+        <label class="chk" title="Let Claude create/edit files in the project folder and ~/Downloads (nowhere else)">
+          <input type="checkbox" id="aiWrite">WRITE</label>
         <button id="bAsk" data-p style="margin-left:auto">[ ASK CLAUDE ⏎ ]</button>
       </div>
     </div>
@@ -424,25 +437,32 @@ $("#bResign").onclick = async e => {
 $("#phos").onclick = () => { document.body.classList.toggle("amber"); try { localStorage.phos = document.body.className; } catch {} };
 try { if (localStorage.phos) document.body.className = localStorage.phos; } catch {}
 
-// resizable file tree
-(() => {
-  const app = $("#app"), bar = $("#sideResize");
-  const setW = w => app.style.setProperty("--side-w", Math.max(160, Math.min(w, innerWidth - 600)) + "px");
-  try { if (localStorage.sideW) setW(+localStorage.sideW); } catch {}
+// resizable panes: file tree (left edge) and the INFO/SCAN/.../CLAUDE panel (right edge).
+// Each keeps the editor at least 300px wide; widths are remembered per browser, double-click resets.
+function paneResizer(barSel, cssVar, key, def, min, widthAt) {
+  const app = $("#app"), bar = $(barSel);
+  const other = () => parseInt(getComputedStyle(app).getPropertyValue(cssVar === "--side-w" ? "--right-w" : "--side-w"))
+    || (cssVar === "--side-w" ? 420 : 280);
+  const setW = w => app.style.setProperty(cssVar, Math.max(min, Math.min(w, innerWidth - other() - 300)) + "px");
+  try { if (localStorage[key]) setW(+localStorage[key]); } catch {}
   bar.onmousedown = e => {
     e.preventDefault();
     bar.classList.add("drag"); document.body.classList.add("resizing");
-    const move = ev => setW(ev.clientX);
+    const move = ev => setW(widthAt(ev.clientX));
     const up = () => {
       document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up);
       bar.classList.remove("drag"); document.body.classList.remove("resizing");
-      try { localStorage.sideW = parseInt(app.style.getPropertyValue("--side-w")); } catch {}
+      try { localStorage[key] = parseInt(app.style.getPropertyValue(cssVar)); } catch {}
       cm.refresh();
     };
     document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
   };
-  bar.ondblclick = () => { setW(280); try { delete localStorage.sideW; } catch {} cm.refresh(); };
-})();
+  bar.ondblclick = () => { setW(def); try { delete localStorage[key]; } catch {} cm.refresh(); };
+}
+paneResizer("#sideResize", "--side-w", "sideW", 280, 160, x => x);
+paneResizer("#rightResize", "--right-w", "rightW", 420, 280, x => innerWidth - x);
+// keep-alive: a windowless TONK-RE (desktop shortcut) shuts its server down once no window pings it
+setInterval(() => get("/api/ping").catch(() => {}), 20000);
 
 // drag & drop upload
 ["dragover", "dragenter"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); $("#empty").classList.add("drag"); }));
@@ -855,7 +875,8 @@ async function askClaude() {
   $("#sessId").textContent = claudeSession.slice(0, 8);
   let md = "";
   try {
-    await stream("claude", {project, question, file: current, selection: sel, session: claudeSession}, line => {
+    await stream("claude", {project, question, file: current, selection: sel, session: claudeSession,
+                            write: $("#aiWrite").checked}, line => {
       if (line.startsWith("@@TOOL")) {
         const [, name, label, rel] = line.split("\t");
         out.insertAdjacentHTML("beforebegin", `<span class="t">  ⚙ ${esc(name)} ${esc(label || "")}</span>\n`);
@@ -873,6 +894,9 @@ function linkify(s) {
 }
 $("#chat").onclick = e => { const a = e.target.closest("a[data-f]"); if (a) openFile(a.dataset.f, +a.dataset.l || undefined); };
 $("#bAsk").onclick = askClaude;
+// remember the WRITE choice per browser (storage may be unavailable: then it just starts unticked)
+try { $("#aiWrite").checked = localStorage.getItem("tonkre.aiWrite") === "1"; } catch {}
+$("#aiWrite").onchange = e => { try { localStorage.setItem("tonkre.aiWrite", e.target.checked ? "1" : "0"); } catch {} };
 $("#ask").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askClaude(); } };
 
 // ---------- boot ----------
@@ -885,8 +909,8 @@ $("#ask").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDe
   lines.push(st("jadx", t.jadx), st("apktool", t.apktool), st("apksigner", t.apksigner), st("zipalign", t.zipalign),
              st("adb", t.adb), st("frida", t.frida), st("claude", t.claude), "", "LOADING TERMINAL...");
   for (const l of lines) { boot.textContent += l + "\n"; await new Promise(r => setTimeout(r, 70)); }
-  $("#sTools").innerHTML = ["apksigner", "zipalign", "adb"].map(k => `<span class="${t[k] ? "" : "bad"}">${k}${t[k] ? "✓" : "✗"}</span>`).join(" ");
-  renderSetup(t);
+  paintTools(t);
+  openSetup(true);
   // warn when apktool is old (resource rebuilds often fail on <3.x; code-only build still works)
   const av = t.apktool_version, major = av && parseInt(av.split(".")[0], 10);
   if (major && major < 3) {
@@ -899,24 +923,58 @@ $("#ask").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDe
   log("tonk-re terminal ready. drop an apk or pick a project.");
 })();
 
-// setup banner: show which tools are missing and how to install them
-function renderSetup(t) {
-  const el = $("#setup"), hints = t.hints || {};
-  const REQUIRED = ["jadx", "apktool"], SIGN = ["keytool"], OPT = ["apksigner", "zipalign", "adb", "frida", "claude"];
-  const miss = n => !t[n];
-  const reqMiss = [...REQUIRED, ...SIGN].filter(miss), optMiss = OPT.filter(miss);
-  // only nag automatically when something genuinely needed is missing; optional tools are listed too, but
-  // a box with ONLY optional tools missing stays hidden (they're already shown on the boot screen).
-  if (!reqMiss.length) { el.hidden = true; return; }
-  const req = new Set(REQUIRED.concat(SIGN));
-  const row = n => `<div><span class="${req.has(n) ? "tool" : "opt"}">${n}${req.has(n) ? " (required)" : " (optional)"}</span>
-    <code>${esc(hints[n] || "see README")}</code></div>`;
-  el.innerHTML = `<h4>⚠ SETUP: missing required tools <button id="setupX">[ X ]</button></h4>
-    ${reqMiss.map(row).join("")}${optMiss.map(row).join("")}
-    <div class="opt" style="margin-top:4px">Install, then restart TONK-RE (or re-run install.sh).</div>`;
+function paintTools(t) {
+  $("#sTools").innerHTML = ["apksigner", "zipalign", "adb"].map(k => `<span class="${t[k] ? "" : "bad"}">${k}${t[k] ? "✓" : "✗"}</span>`).join(" ");
+}
+
+// ---------- setup: one-click toolchain install into ~/.tonkre/tools (tools.py) ----------
+let setupInfo = null;
+async function openSetup(auto) {
+  const el = $("#setup");
+  try { setupInfo = await get("/api/setup"); } catch (e) { return log("[-] setup: " + e.message); }
+  const cs = setupInfo.components, miss = cs.filter(c => !c.installed);
+  // pop up on its own only when something required is missing; [ SETUP ⚙ ] always opens it
+  if (auto && !miss.some(c => c.required)) { el.hidden = true; return; }
+  const row = c => `<div class="srow">
+    <span class="${c.installed ? "ok" : c.required ? "bad" : "opt"}">${c.installed ? "[✓]" : "[ ]"}</span>
+    <span>${esc(c.label)} <span class="opt">${c.required ? "" : "(optional) "}${esc(c.desc)}</span>
+      ${c.installed ? `<code>${esc(c.path || "")}${c.managed ? "  (managed)" : ""}</code>` : ""}</span>
+    ${c.installed ? "" : `<button data-sid="${c.id}">[ INSTALL ]</button>`}</div>`;
+  el.innerHTML = `<h4>⚙ SETUP: toolchain <button id="setupX">[ X ]</button></h4>
+    ${cs.map(row).join("")}
+    ${miss.some(c => c.license) ? `<label class="chk lic"><input type="checkbox" id="setupLic">I accept the
+      <a href="#" id="setupLicView">Android SDK License</a> (for build-tools / platform-tools)</label>
+      <pre id="setupLicText" hidden></pre>` : ""}
+    <div class="sfoot">${miss.length ? `<button id="setupAll" class="warn">[ INSTALL ALL ]</button>`
+      : `<span class="ok">all tools installed.</span>`}
+      <span class="opt">into ${esc(setupInfo.home)}: no admin, no PATH changes</span></div>`;
   el.hidden = false;
   $("#setupX").onclick = () => el.hidden = true;
+  $$("#setup [data-sid]").forEach(b => b.onclick = () => setupRun([b.dataset.sid], b));
+  if ($("#setupAll")) $("#setupAll").onclick = e => setupRun(["all"], e.currentTarget);
+  if ($("#setupLicView")) $("#setupLicView").onclick = async e => {
+    e.preventDefault();
+    const pre = $("#setupLicText");
+    if (!pre.textContent) {
+      pre.textContent = "loading...";
+      try { pre.textContent = (await get("/api/setup/license")).text; } catch { pre.textContent = "see " + setupInfo.license_url; }
+    }
+    pre.hidden = !pre.hidden;
+  };
 }
+async function setupRun(ids, btn) {
+  const lic = $("#setupLic"), comps = setupInfo.components;
+  const needsLic = comps.some(c => c.license && !c.installed && (ids.includes("all") || ids.includes(c.id)));
+  if (needsLic && !(lic && lic.checked)) {
+    log("[!] tick 'I accept the Android SDK License' first (build-tools / platform-tools are Google's)");
+    lic.parentElement.classList.remove("need"); void lic.offsetWidth; lic.parentElement.classList.add("need");
+    return;
+  }
+  await run("setup", {ids, accept_license: !!(lic && lic.checked)}, btn);
+  try { paintTools(await get("/api/tools")); } catch {}
+  openSetup(false);
+}
+$("#bSetup").onclick = () => $("#setup").hidden ? openSetup(false) : ($("#setup").hidden = true);
 </script>
 </body>
 </html>
