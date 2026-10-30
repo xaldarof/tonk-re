@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.log
+# local data / decompiled projects / keystores never belong in git
+.tonkre/
+*.keystore
+*.apk
+*.xapk
+*.apks
+*.apkm

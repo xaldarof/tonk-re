@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TONK-RE Terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/dialog/dialog.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/mode/simple.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/dialog/dialog.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/searchcursor.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/search.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/search/jump-to-line.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/selection/active-line.min.js"></script>
+<style>
+:root{
+  --bg:#030603; --panel:#061006; --line:#0f3d1a; --fg:#39ff6a; --dim:#1f8f40; --faint:#0d2a14;
+  --hi:#b6ffc9; --amber:#ffb000; --red:#ff3b5c; --cyan:#3be8ff; --glow:0 0 6px rgba(57,255,106,.55);
+}
+body.amber{
+  --fg:#ffb000; --dim:#a8740a; --hi:#ffe2a0; --line:#3d2a05; --faint:#241802; --panel:#0c0802;
+  --glow:0 0 6px rgba(255,176,0,.5);
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg); color:var(--fg); font-family:'VT323',monospace; font-size:20px;
+  text-shadow:var(--glow); overflow:hidden;
+}
+/* CRT: scanlines + vignette + flicker */
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:50;
+  background:repeating-linear-gradient(to bottom,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.28) 2px 3px);}
+body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:51;
+  background:radial-gradient(ellipse at center,rgba(0,0,0,0) 60%,rgba(0,0,0,.65) 100%);
+  animation:flicker 6s infinite steps(1);}
+@keyframes flicker{0%,100%{opacity:1}47%{opacity:.92}48%{opacity:1}83%{opacity:.95}}
+::selection{background:var(--fg);color:var(--bg)}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--line);border:1px solid var(--dim)}
+
+#app{display:grid;height:100vh;grid-template-rows:auto auto 1fr 190px;
+  grid-template-columns:var(--side-w,280px) 1fr 420px;
+  grid-template-areas:"hdr hdr hdr" "bar bar bar" "side main right" "con con con";}
+header{grid-area:hdr;display:flex;align-items:center;gap:18px;padding:4px 12px;border-bottom:1px solid var(--line)}
+header pre{margin:0;font-size:10px;line-height:10px;color:var(--fg)}
+header .status{margin-left:auto;text-align:right;color:var(--dim);font-size:18px;line-height:1.1}
+header .status b{color:var(--fg);font-weight:normal}
+
+#bar{grid-area:bar;display:flex;flex-wrap:wrap;gap:6px;padding:6px 12px;border-bottom:1px solid var(--line);align-items:center}
+button,.btn{font:inherit;font-size:19px;color:var(--fg);background:transparent;border:1px solid var(--dim);
+  padding:0 10px;cursor:pointer;text-shadow:inherit;white-space:nowrap}
+button:hover:not(:disabled){background:var(--fg);color:var(--bg);text-shadow:none;box-shadow:var(--glow)}
+button:disabled{opacity:.35;cursor:not-allowed}
+button.warn{border-color:var(--amber);color:var(--amber)}
+button.warn:hover:not(:disabled){background:var(--amber);color:var(--bg)}
+input,select,textarea{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--dim);padding:1px 6px;text-shadow:inherit;outline:none}
+input:focus,textarea:focus,select:focus{border-color:var(--fg);box-shadow:var(--glow)}
+#path{flex:1;min-width:220px}
+.sep{color:var(--line)}
+label.chk{display:flex;gap:4px;align-items:center;color:var(--dim);cursor:pointer}
+label.chk input{accent-color:var(--fg)}
+
+.pane{border-right:1px solid var(--line);overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.pane h3{margin:0;padding:2px 10px;font-weight:normal;font-size:18px;background:var(--faint);
+  border-bottom:1px solid var(--line);color:var(--dim);letter-spacing:1px}
+#side{grid-area:side;position:relative}
+.resizer{position:absolute;top:0;right:-3px;width:6px;height:100%;cursor:col-resize;z-index:5}
+.resizer:hover,.resizer.drag{background:var(--fg);box-shadow:var(--glow);opacity:.6}
+body.resizing{cursor:col-resize;user-select:none}
+#side select{margin:6px;width:calc(100% - 12px)}
+#tree{flex:1;overflow:auto;padding:4px 0 10px;font-size:18px}
+.node{padding:0 8px;cursor:pointer;white-space:nowrap;line-height:1.15}
+.node:hover{background:var(--faint);color:var(--hi)}
+.node.active{background:var(--fg);color:var(--bg);text-shadow:none}
+.kids{padding-left:14px;border-left:1px dotted var(--line);margin-left:12px}
+
+#main{grid-area:main;border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0;min-height:0}
+#tabs{display:flex;overflow-x:auto;border-bottom:1px solid var(--line);background:var(--faint);min-height:26px}
+.tab{padding:1px 10px;border-right:1px solid var(--line);cursor:pointer;white-space:nowrap;color:var(--dim);font-size:18px}
+.tab.on{background:var(--bg);color:var(--fg)}
+.tab .x{margin-left:8px;opacity:.6}.tab .x:hover{opacity:1;color:var(--red)}
+.tab.dirty .nm::after{content:" *";color:var(--amber)}
+#edwrap{flex:1;position:relative;min-height:0}
+#empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;
+  color:var(--dim);z-index:2;background:var(--bg);text-align:center;padding:20px}
+#empty pre{font-size:13px;line-height:13px;color:var(--fg)}
+#empty.drag{outline:2px dashed var(--fg);outline-offset:-14px}
+#edfoot{display:flex;gap:16px;padding:0 10px;border-top:1px solid var(--line);color:var(--dim);font-size:17px}
+
+/* CodeMirror phosphor theme */
+.CodeMirror{height:100%;background:var(--bg);color:var(--hi);font-family:'IBM Plex Mono',monospace;font-size:13px;
+  text-shadow:0 0 3px rgba(57,255,106,.35)}
+.CodeMirror-gutters{background:var(--panel);border-right:1px solid var(--line)}
+.CodeMirror-linenumber{color:var(--dim)}
+.CodeMirror-cursor{border-left:8px solid var(--fg);opacity:.7}
+.CodeMirror-selected,.CodeMirror-focused .CodeMirror-selected{background:#1a5c2c!important}
+.CodeMirror-activeline-background{background:#0a1f0f}
+.cm-s-phosphor .cm-keyword{color:var(--fg);font-weight:600}
+.cm-s-phosphor .cm-def{color:var(--cyan)}
+.cm-s-phosphor .cm-variable{color:#d8ffe2}
+.cm-s-phosphor .cm-variable-2{color:#8fffb0}
+.cm-s-phosphor .cm-variable-3,.cm-s-phosphor .cm-type{color:var(--cyan)}
+.cm-s-phosphor .cm-string,.cm-s-phosphor .cm-string-2{color:var(--amber)}
+.cm-s-phosphor .cm-number{color:#ff7ad9}
+.cm-s-phosphor .cm-comment{color:#3f7f50;font-style:italic}
+.cm-s-phosphor .cm-meta,.cm-s-phosphor .cm-attribute{color:#7fd9ff}
+.cm-s-phosphor .cm-tag{color:var(--fg)}
+.cm-s-phosphor .cm-builtin{color:#c3ff3b}
+.cm-s-phosphor .cm-atom{color:#ff9e5e}
+.cm-s-phosphor .cm-operator{color:var(--dim)}
+.jumpline{background:#2a4a00!important}
+.CodeMirror-dialog{background:var(--panel);color:var(--fg);border-color:var(--line)!important}
+.CodeMirror-dialog input{color:var(--fg);font-family:'IBM Plex Mono'}
+.CodeMirror-searching{background:rgba(255,176,0,.35)}
+
+#right{grid-area:right;border-right:none}
+#rtabs{display:flex;border-bottom:1px solid var(--line)}
+#rtabs button{border:none;border-right:1px solid var(--line);flex:1;color:var(--dim)}
+#rtabs button.on{background:var(--fg);color:var(--bg);text-shadow:none}
+.rp{display:none;flex:1;overflow:auto;padding:8px 10px;flex-direction:column;gap:6px;min-height:0}
+.rp.on{display:flex}
+.kv{display:grid;grid-template-columns:140px 1fr;gap:0 8px;font-size:18px}
+.kv span:nth-child(odd){color:var(--dim)}
+.sec{color:var(--dim);border-bottom:1px dashed var(--line);margin-top:8px}
+.bad{color:var(--red)} .ok{color:var(--fg)} .am{color:var(--amber)}
+.list{font-family:'IBM Plex Mono',monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;color:var(--hi)}
+.hit{cursor:pointer;display:block;padding:1px 0;border-bottom:1px solid var(--faint)}
+.hit:hover{background:var(--faint);color:var(--fg)}
+.hit .loc{color:var(--cyan)}
+.row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+#chat{flex:1;overflow:auto;font-family:'IBM Plex Mono',monospace;font-size:12.5px;white-space:pre-wrap;color:var(--hi);
+  border:1px solid var(--line);padding:8px;min-height:120px}
+#chat .q{color:var(--amber)} #chat .t{color:var(--dim)}
+#chat a{color:var(--cyan);cursor:pointer;text-decoration:underline dotted}
+#ask{height:70px;resize:vertical;font-family:'IBM Plex Mono',monospace;font-size:13px}
+
+#con{grid-area:con;border-top:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+#con h3{display:flex;align-items:center}
+#con h3 button{margin-left:auto;font-size:16px;padding:0 6px;border:none}
+#log{flex:1;overflow:auto;margin:0;padding:4px 10px;font-family:'IBM Plex Mono',monospace;font-size:12px;
+  color:var(--dim);white-space:pre-wrap}
+#log .c{color:var(--hi)} #log .g{color:var(--fg)} #log .r{color:var(--red)} #log .y{color:var(--amber)}
+.cursor::after{content:"█";animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.busy{animation:pulse .8s infinite alternate}
+@keyframes pulse{from{opacity:1}to{opacity:.4}}
+
+#boot{position:fixed;inset:0;background:var(--bg);z-index:40;padding:30px 40px;font-size:22px;white-space:pre-wrap;
+  transition:opacity .5s}
+#boot.gone{opacity:0;pointer-events:none}
+
+@media (max-width:1000px){
+  #app{grid-template-columns:1fr;grid-template-rows:auto auto 220px 1fr 320px 160px;
+    grid-template-areas:"hdr" "bar" "side" "main" "right" "con";overflow:auto;height:auto;min-height:100vh}
+  body{overflow:auto}
+  header pre{display:none}
+  .resizer{display:none}
+}
+</style>
+</head>
+<body>
+<div id="boot"></div>
+<div id="app">
+  <header>
+<pre>
+████████╗ ██████╗ ███╗   ██╗██╗  ██╗      ██████╗ ███████╗
+╚══██╔══╝██╔═══██╗████╗  ██║██║ ██╔╝      ██╔══██╗██╔════╝
+   ██║   ██║   ██║██╔██╗ ██║█████╔╝ █████╗██████╔╝█████╗
+   ██║   ██║   ██║██║╚██╗██║██╔═██╗ ╚════╝██╔══██╗██╔══╝
+   ██║   ╚██████╔╝██║ ╚████║██║  ██╗      ██║  ██║███████╗
+   ╚═╝    ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝      ╚═╝  ╚═╝╚══════╝</pre>
+    <div style="color:var(--dim)">ANDROID REVERSE ENGINEERING TERMINAL<br>jadx · apktool · apksigner · claude</div>
+    <div class="status">
+      PROJECT: <b id="sProj">none</b><br>
+      <span id="sTools">probing...</span><br>
+      <button id="phos" title="Toggle phosphor color">[ PHOSPHOR ]</button>
+    </div>
+  </header>
+
+  <div id="bar">
+    <button id="bPick">[ BROWSE ]</button>
+    <input id="path" placeholder="/path/to/app.apk   (or drop an .apk anywhere)">
+    <label class="chk"><input type="checkbox" id="deobf">DEOBF</label>
+    <label class="chk"><input type="checkbox" id="force">FORCE</label>
+    <button id="bDec">[ DECOMPILE ]</button>
+    <span class="sep">│</span>
+    <button id="bBuild" data-p>[ BUILD ]</button>
+    <button id="bSign" data-p>[ SIGN ]</button>
+    <button id="bBS" data-p>[ BUILD+SIGN ]</button>
+    <button id="bInst" data-p>[ INSTALL ▸ ADB ]</button>
+    <button id="bDist" data-p>[ OPEN DIST ]</button>
+    <span class="sep">│</span>
+    <button id="bResign" class="warn">[ RESIGN APK ]</button>
+  </div>
+
+  <section id="side" class="pane">
+    <h3>// PROJECTS</h3>
+    <select id="proj"><option value="">-- select project --</option></select>
+    <h3>// FILESYSTEM</h3>
+    <div id="tree"></div>
+    <div class="resizer" id="sideResize" title="Drag to resize · double-click to reset"></div>
+  </section>
+
+  <section id="main">
+    <div id="tabs"></div>
+    <div id="edwrap">
+      <div id="empty">
+<pre>
+   ┌──────────────────────────────────────┐
+   │  DROP AN .APK / .XAPK / .APKS HERE   │
+   │  OR ENTER A PATH AND HIT DECOMPILE   │
+   └──────────────────────────────────────┘</pre>
+        <div>⌘S save · ⌘F find · ⌥G goto line · edit smali → BUILD+SIGN</div>
+      </div>
+      <textarea id="ed"></textarea>
+    </div>
+    <div id="edfoot"><span id="fName">-</span><span id="fMode"></span><span id="fPos" style="margin-left:auto"></span>
+      <button id="bSave" style="font-size:16px;padding:0 6px">[ SAVE ]</button></div>
+  </section>
+
+  <section id="right" class="pane">
+    <div id="rtabs">
+      <button data-r="info" class="on">INFO</button>
+      <button data-r="scan">SCAN</button>
+      <button data-r="find">SEARCH</button>
+      <button data-r="ai">CLAUDE</button>
+    </div>
+    <div class="rp on" id="r-info"><div style="color:var(--dim)">&gt; no project loaded<span class="cursor"></span></div></div>
+    <div class="rp" id="r-scan">
+      <div class="row">
+        <button data-scan="secrets" data-p>[ SECRETS ]</button>
+        <button data-scan="urls" data-p>[ URLS ]</button>
+        <button data-scan="security" data-p>[ CRYPTO/SEC ]</button>
+      </div>
+      <div id="scanOut" class="list"></div>
+    </div>
+    <div class="rp" id="r-find">
+      <div class="row">
+        <input id="q" placeholder="regex..." style="flex:1">
+        <select id="scope"><option>java</option><option>smali</option><option>resources</option><option>all</option></select>
+        <label class="chk"><input type="checkbox" id="qi">-i</label>
+        <button id="bFind" data-p>[ GREP ]</button>
+      </div>
+      <div id="findOut" class="list"></div>
+    </div>
+    <div class="rp" id="r-ai">
+      <div id="chat"><span class="t">claude@tonk-re:~$ ask anything about the decompiled app.
+claude can read and grep the project (read-only).
+select code in the editor to send it as context.</span></div>
+      <textarea id="ask" placeholder="e.g. how does the login request get signed? where is the API key used?"></textarea>
+      <div class="row">
+        <label class="chk"><input type="checkbox" id="withSel" checked>SEND SELECTION</label>
+        <button id="bAsk" data-p style="margin-left:auto">[ ASK CLAUDE ⏎ ]</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="con" class="pane">
+    <h3>// CONSOLE <button id="bClr">[ CLEAR ]</button></h3>
+    <pre id="log"></pre>
+  </section>
+</div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+let project = "", files = {}, current = null, busy = false;
+
+// ---------- api ----------
+async function get(path, params = {}) {
+  const r = await fetch(path + "?" + new URLSearchParams(params), {headers: {"X-Token": TOKEN}});
+  const j = await r.json();
+  if (j && j.error) throw new Error(j.error);
+  return j;
+}
+async function post(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"X-Token": TOKEN, "Content-Type": "application/json"},
+    body: JSON.stringify(body)});
+  const j = await r.json();
+  if (j && j.error) throw new Error(j.error);
+  return j;
+}
+async function stream(action, body, onLine) {
+  const r = await fetch("/api/run/" + action, {method: "POST",
+    headers: {"X-Token": TOKEN, "Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const rd = r.body.getReader(), dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const {value, done} = await rd.read();
+    if (done) break;
+    buf += dec.decode(value, {stream: true});
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
+  }
+  if (buf) onLine(buf);
+}
+
+// ---------- console ----------
+const esc = s => s.replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+function log(line) {
+  const cls = line.startsWith("$ ") ? "c" : line.startsWith("[+]") ? "g" : /^\[-\]|ERROR|FAIL|Exception/.test(line) ? "r"
+    : /^\[!\]|WARN/.test(line) ? "y" : "";
+  const el = $("#log");
+  el.insertAdjacentHTML("beforeend", `<span class="${cls}">${esc(line)}</span>\n`);
+  el.scrollTop = el.scrollHeight;
+}
+$("#bClr").onclick = () => $("#log").textContent = "";
+
+async function run(action, body, btn) {
+  if (busy) return log("[!] busy, wait for the current job");
+  busy = true; setButtons(); btn && btn.classList.add("busy");
+  log(`\n>>> ${action.toUpperCase()} ${new Date().toLocaleTimeString()}`);
+  try {
+    await stream(action, body, line => {
+      if (line.startsWith("@@PROJECT ")) loadProjects(line.slice(10).trim());
+      else log(line);
+    });
+  } catch (e) { log("[-] " + e.message); }
+  busy = false; btn && btn.classList.remove("busy"); setButtons();
+}
+function setButtons() {
+  $$("[data-p]").forEach(b => b.disabled = !project || busy);
+  ["#bDec", "#bResign", "#bPick"].forEach(s => $(s).disabled = busy);
+}
+
+// ---------- toolbar ----------
+$("#bPick").onclick = async () => { const {path} = await post("/api/pick", {}); if (path) $("#path").value = path; };
+$("#bDec").onclick = e => {
+  const path = $("#path").value.trim();
+  if (!path) return log("[!] enter an APK path first");
+  run("decompile", {path, deobf: $("#deobf").checked, force: $("#force").checked}, e.currentTarget);
+};
+$("#bBuild").onclick = e => saveAll().then(() => run("build", {project}, e.currentTarget));
+$("#bSign").onclick = e => run("sign", {project}, e.currentTarget);
+$("#bBS").onclick = e => saveAll().then(() => run("build_sign", {project}, e.currentTarget)).then(() => refreshDir("dist"));
+$("#bInst").onclick = e => run("install", {project}, e.currentTarget);
+$("#bDist").onclick = () => post("/api/reveal", {project});
+$("#bResign").onclick = async e => {
+  let path = $("#path").value.trim();
+  if (!path) { path = (await post("/api/pick", {})).path; }
+  if (path) run("resign", {path}, e.currentTarget);
+};
+$("#phos").onclick = () => { document.body.classList.toggle("amber"); try { localStorage.phos = document.body.className; } catch {} };
+try { if (localStorage.phos) document.body.className = localStorage.phos; } catch {}
+
+// resizable file tree
+(() => {
+  const app = $("#app"), bar = $("#sideResize");
+  const setW = w => app.style.setProperty("--side-w", Math.max(160, Math.min(w, innerWidth - 600)) + "px");
+  try { if (localStorage.sideW) setW(+localStorage.sideW); } catch {}
+  bar.onmousedown = e => {
+    e.preventDefault();
+    bar.classList.add("drag"); document.body.classList.add("resizing");
+    const move = ev => setW(ev.clientX);
+    const up = () => {
+      document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up);
+      bar.classList.remove("drag"); document.body.classList.remove("resizing");
+      try { localStorage.sideW = parseInt(app.style.getPropertyValue("--side-w")); } catch {}
+      cm.refresh();
+    };
+    document.addEventListener("mousemove", move); document.addEventListener("mouseup", up);
+  };
+  bar.ondblclick = () => { setW(280); try { delete localStorage.sideW; } catch {} cm.refresh(); };
+})();
+
+// drag & drop upload
+["dragover", "dragenter"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); $("#empty").classList.add("drag"); }));
+document.addEventListener("dragleave", () => $("#empty").classList.remove("drag"));
+document.addEventListener("drop", async e => {
+  e.preventDefault(); $("#empty").classList.remove("drag");
+  const f = e.dataTransfer.files[0];
+  if (!f || !/\.(apk|xapk|apks|apkm)$/i.test(f.name)) return log("[!] drop an .apk/.xapk/.apks file");
+  log(`[*] uploading ${f.name} (${(f.size / 1048576).toFixed(1)} MB)`);
+  const r = await fetch("/api/upload?name=" + encodeURIComponent(f.name),
+    {method: "POST", headers: {"X-Token": TOKEN}, body: await f.arrayBuffer()});
+  const {path} = await r.json();
+  $("#path").value = path;
+  $("#bDec").click();
+});
+
+// ---------- projects & tree ----------
+async function loadProjects(select) {
+  const ps = await get("/api/projects");
+  $("#proj").innerHTML = `<option value="">-- select project --</option>` +
+    ps.map(p => `<option value="${p.project}">${p.package || p.project}  [${p.project.slice(-10)}]</option>`).join("");
+  if (select) { $("#proj").value = select; openProject(select); }
+}
+$("#proj").onchange = e => openProject(e.target.value);
+
+async function openProject(p) {
+  project = p; files = {}; current = null; renderTabs(); showEmpty(true);
+  $("#sProj").textContent = p || "none"; setButtons();
+  $("#tree").innerHTML = "";
+  if (!p) return;
+  await renderDir($("#tree"), "");
+  loadInfo();
+}
+
+async function renderDir(container, path) {
+  const items = await get("/api/ls", {project, path});
+  container.innerHTML = "";
+  for (const it of items) {
+    const n = document.createElement("div");
+    n.className = "node"; n.dataset.path = it.path;
+    n.textContent = (it.dir ? "▸ " : fileIcon(it.name)) + it.name;
+    container.appendChild(n);
+    if (it.dir) {
+      const kids = document.createElement("div");
+      kids.className = "kids"; kids.hidden = true; kids.dataset.dir = it.path;
+      container.appendChild(kids);
+      n.onclick = async () => {
+        kids.hidden = !kids.hidden;
+        n.textContent = (kids.hidden ? "▸ " : "▾ ") + it.name;
+        if (!kids.hidden && !kids.childElementCount) await renderDir(kids, it.path);
+      };
+    } else n.onclick = () => openFile(it.path);
+  }
+}
+async function refreshDir(path) {
+  const k = $(`.kids[data-dir="${path}"]`);
+  if (k) { if (!k.hidden) await renderDir(k, path); return; }
+  // new top-level dir (e.g. dist/ after first build): re-render root, keep expanded folders open
+  const open = $$(".kids:not([hidden])").map(e => e.dataset.dir);
+  await renderDir($("#tree"), "");
+  for (const d of open) { const n = $(`.node[data-path="${CSS.escape(d)}"]`); if (n) await n.onclick(); }
+  const a = current && $(`.node[data-path="${CSS.escape(current)}"]`); a && a.classList.add("active");
+}
+const fileIcon = n => /\.java$/.test(n) ? "J " : /\.smali$/.test(n) ? "S " : /\.xml$/.test(n) ? "X " : /\.so$/.test(n) ? "⚙ " : /\.apk$/.test(n) ? "▣ " : "· ";
+
+// ---------- editor ----------
+CodeMirror.defineSimpleMode("smali", {start: [
+  {regex: /#.*/, token: "comment"},
+  {regex: /"(?:[^\\"]|\\.)*"/, token: "string"},
+  {regex: /\s*\.[a-z][\w-]*/, sol: true, token: "keyword"},
+  {regex: /\s*:[\w$]+/, sol: true, token: "tag"},
+  {regex: /\s*[a-z][a-z0-9\-\/]*(?=\s|$)/, sol: true, token: "builtin"},
+  {regex: /\b(?:public|private|protected|static|final|synthetic|constructor|abstract|interface|bridge|varargs|native|declared-synchronized|volatile|transient|enum|annotation|system|runtime|build)\b/, token: "atom"},
+  {regex: /\b[vp]\d+\b/, token: "variable-2"},
+  {regex: /\[*L[\w\/$\-]+;/, token: "type"},
+  {regex: /->[\w$<>\-]+/, token: "def"},
+  {regex: /:[\w$]+/, token: "tag"},
+  {regex: /-?0x[0-9a-fA-F]+[tsL]?\b|-?\b\d+\b/, token: "number"},
+  {regex: /[{}(),]/, token: "operator"},
+]});
+
+const cm = CodeMirror.fromTextArea($("#ed"), {theme: "phosphor", lineNumbers: true, styleActiveLine: true, indentUnit: 4,
+  extraKeys: {"Cmd-S": () => save(), "Ctrl-S": () => save(), "Alt-G": "jumpToLine"}});
+cm.on("cursorActivity", () => { const c = cm.getCursor(); $("#fPos").textContent = `LN ${c.line + 1}  COL ${c.ch + 1}`; });
+cm.on("change", () => { if (current && files[current] && !files[current].loading) { files[current].dirty = !files[current].doc.isClean(); renderTabs(); } });
+
+function modeFor(p) {
+  if (/\.java$/.test(p)) return "text/x-java";
+  if (/\.kt$/.test(p)) return "text/x-kotlin";
+  if (/\.smali$/.test(p)) return "smali";
+  if (/\.(xml|html)$/.test(p)) return "xml";
+  if (/\.json$/.test(p)) return "application/json";
+  if (/\.(js|bundle)$/.test(p)) return "javascript";
+  if (/\.ya?ml$/.test(p)) return "yaml";
+  return "text/plain";
+}
+const showEmpty = on => $("#empty").style.display = on ? "flex" : "none";
+
+async function openFile(path, line) {
+  if (!files[path]) {
+    let r;
+    try { r = await get("/api/file", {project, path}); } catch (e) { return log("[-] " + e.message); }
+    if (r.binary) return log(`[!] ${path} is binary (${r.size} bytes). Ask Claude to analyze it with REA, or reveal it in Finder.`);
+    files[path] = {doc: CodeMirror.Doc(r.content, modeFor(path)), dirty: false, loading: true};
+    files[path].doc.markClean(); files[path].loading = false;
+  }
+  current = path; showEmpty(false);
+  cm.swapDoc(files[path].doc); cm.refresh();
+  $("#fName").textContent = path; $("#fMode").textContent = modeFor(path).toUpperCase();
+  $$(".node.active").forEach(n => n.classList.remove("active"));
+  const n = $(`.node[data-path="${CSS.escape(path)}"]`); n && n.classList.add("active");
+  renderTabs();
+  if (line) jump(line);
+}
+function jump(line) {
+  const l = line - 1;
+  cm.setCursor({line: l, ch: 0}); cm.scrollIntoView({line: l, ch: 0}, 200);
+  cm.addLineClass(l, "background", "jumpline");
+  setTimeout(() => cm.removeLineClass(l, "background", "jumpline"), 1800);
+  cm.focus();
+}
+function renderTabs() {
+  $("#tabs").innerHTML = Object.keys(files).map(p =>
+    `<div class="tab ${p === current ? "on" : ""} ${files[p].dirty ? "dirty" : ""}" data-p="${esc(p)}">
+       <span class="nm">${esc(p.split("/").pop())}</span><span class="x">×</span></div>`).join("");
+  $$(".tab").forEach(t => t.onclick = e => {
+    const p = t.dataset.p;
+    if (e.target.classList.contains("x")) {
+      if (files[p].dirty && !window.confirm(`Discard unsaved changes to ${p}?`)) return;
+      delete files[p];
+      if (current === p) { const k = Object.keys(files); k.length ? openFile(k[k.length - 1]) : (current = null, showEmpty(true)); }
+      renderTabs();
+    } else openFile(p);
+  });
+}
+async function save(p = current) {
+  if (!p || !files[p]) return;
+  try {
+    await post("/api/save", {project, path: p, content: files[p].doc.getValue()});
+    files[p].doc.markClean(); files[p].dirty = false; renderTabs();
+    log(`[+] saved ${p}`);
+    if (p.startsWith("jadx/")) log("[!] note: BUILD uses apktool/ (smali + res). Java edits are not recompiled.");
+  } catch (e) { log("[-] save failed: " + e.message); }
+}
+$("#bSave").onclick = () => save();
+async function saveAll() { for (const p of Object.keys(files)) if (files[p].dirty) await save(p); }
+
+// ---------- right panels ----------
+$$("#rtabs button").forEach(b => b.onclick = () => {
+  $$("#rtabs button").forEach(x => x.classList.toggle("on", x === b));
+  $$(".rp").forEach(x => x.classList.toggle("on", x.id === "r-" + b.dataset.r));
+});
+
+const DANGER = /(READ|WRITE)_(SMS|CONTACTS|CALL_LOG|EXTERNAL_STORAGE)|RECORD_AUDIO|CAMERA|ACCESS_(FINE|BACKGROUND)_LOCATION|SYSTEM_ALERT_WINDOW|BIND_ACCESSIBILITY|REQUEST_INSTALL|QUERY_ALL_PACKAGES|MANAGE_EXTERNAL/;
+async function loadInfo() {
+  const el = $("#r-info");
+  el.innerHTML = `<div class="busy">&gt; parsing manifest...</div>`;
+  let i;
+  try { i = await get("/api/info", {project}); } catch (e) { el.innerHTML = `<div class="bad">${esc(e.message)}</div>`; return; }
+  const a = i.application || {};
+  const flag = (v, badIfTrue) => v == null ? `<span>-</span>` : `<span class="${(v === "true") === badIfTrue ? "bad" : "ok"}">${v}</span>`;
+  el.innerHTML = `
+    <div class="kv">
+      <span>PACKAGE</span><span>${esc(i.package || "?")}</span>
+      <span>VERSION</span><span>${esc(i.versionName || "?")} (${esc(i.versionCode || "?")})</span>
+      <span>SDK MIN/TGT</span><span>${esc(i.minSdkVersion || "?")} / ${esc(i.targetSdkVersion || "?")}</span>
+      <span>APP CLASS</span><span>${esc(a.name || "-")}</span>
+      <span>DEBUGGABLE</span>${flag(a.debuggable, true)}
+      <span>ALLOWBACKUP</span>${flag(a.allowBackup, true)}
+      <span>CLEARTEXT</span>${flag(a.usesCleartextTraffic, true)}
+      <span>NET SEC CFG</span><span>${esc(a.networkSecurityConfig || "-")}</span>
+      <span>FRAMEWORKS</span><span class="am">${esc((i.frameworks || []).join(", ") || "native java/kotlin")}</span>
+      <span>COMPONENTS</span><span>${Object.entries(i.component_counts || {}).map(([k, v]) => `${k}:${v}`).join(" ")}</span>
+    </div>
+    <div class="sec">// EXPORTED COMPONENTS (${i.exported_components.length})</div>
+    <div class="list">${i.exported_components.map(c =>
+      `<span class="hit" data-cls="${esc(c.name || "")}"><span class="am">[${c.type}]</span> ${esc(c.name || "")}${c.permission ? ` <span class="ok">perm=${esc(c.permission)}</span>` : ` <span class="bad">no-perm</span>`}${c.schemes.length ? `\n   schemes: ${esc(c.schemes.join(", "))}` : ""}${c.actions.length ? `\n   actions: ${esc(c.actions.join(", "))}` : ""}</span>`).join("")}</div>
+    <div class="sec">// PERMISSIONS (${i.permissions.length})</div>
+    <div class="list">${i.permissions.map(p => `<span class="${DANGER.test(p) ? "bad" : ""}">${esc(p)}</span>`).join("\n")}</div>
+    <div class="sec">// NATIVE LIBS (${i.native_libs.length})</div>
+    <div class="list">${i.native_libs.map(l => `<span class="hit" data-path="apktool/${esc(l)}">${esc(l)}</span>`).join("")}</div>`;
+  el.querySelectorAll("[data-cls]").forEach(h => h.onclick = () => {
+    let c = h.dataset.cls; if (c.startsWith(".")) c = i.package + c;
+    openFile("jadx/sources/" + c.replace(/\./g, "/") + ".java");
+  });
+  el.querySelectorAll("[data-path]").forEach(h => h.onclick = () => log(`[!] ${h.dataset.path} is native code: ask Claude to analyze it with REA`));
+}
+
+// clickable "path:line:text" result lines
+function normPath(p) { return /^(jadx|apktool|dist)\//.test(p) ? p : "jadx/sources/" + p; }
+function renderHits(el, text, base = "") {
+  el.innerHTML = text.split("\n").map(l => {
+    const m = l.match(/^\s*"?([\w$.\/\-]+\.\w+):(\d+):(.*)$/);
+    if (!m) {
+      const u = l.match(/^(.*?)\s+<- (.+)$/);
+      if (u) return `<span class="hit" data-f="${esc(normPath(u[2]))}" data-l="0"><span class="am">${esc(u[1])}</span>  <span class="loc">${esc(u[2])}</span></span>`;
+      return esc(l);
+    }
+    const path = base ? base + m[1] : normPath(m[1]);
+    return `<span class="hit" data-f="${esc(path)}" data-l="${m[2]}"><span class="loc">${esc(m[1])}:${m[2]}</span> ${esc(m[3].trim().slice(0, 220))}</span>`;
+  }).join("");
+  el.querySelectorAll(".hit").forEach(h => h.onclick = () => openFile(h.dataset.f, +h.dataset.l || undefined));
+}
+
+$$("[data-scan]").forEach(b => b.onclick = async () => {
+  $("#scanOut").innerHTML = `<span class="busy">&gt; scanning ${b.dataset.scan}...</span>`;
+  try { renderHits($("#scanOut"), (await get("/api/scan", {project, kind: b.dataset.scan})).text); }
+  catch (e) { $("#scanOut").textContent = e.message; }
+});
+
+const SCOPE_BASE = {java: "jadx/sources/", smali: "apktool/", resources: "apktool/", all: ""};
+async function doFind() {
+  const q = $("#q").value; if (!q) return;
+  const scope = $("#scope").value;
+  $("#findOut").innerHTML = `<span class="busy">&gt; grep ${esc(q)}...</span>`;
+  try {
+    const r = await get("/api/search", {project, q, scope, i: $("#qi").checked ? "1" : "0"});
+    renderHits($("#findOut"), r.text, SCOPE_BASE[scope]);
+  } catch (e) { $("#findOut").textContent = e.message; }
+}
+$("#bFind").onclick = doFind;
+$("#q").onkeydown = e => e.key === "Enter" && doFind();
+
+// ---------- claude ----------
+// claude output streams into the chat panel, not the console
+async function askClaude() {
+  if (busy) return log("[!] busy");
+  const question = $("#ask").value.trim(); if (!question || !project) return;
+  const chat = $("#chat"), sel = $("#withSel").checked && current ? cm.getSelection() : "";
+  chat.insertAdjacentHTML("beforeend", `\n\n<span class="q">&gt; ${esc(question)}</span>${sel ? `<span class="t">  [+${sel.split("\n").length} lines]</span>` : ""}\n`);
+  $("#ask").value = "";
+  const out = document.createElement("span"); out.className = "cursor"; chat.appendChild(out);
+  busy = true; setButtons(); $("#bAsk").classList.add("busy");
+  let md = "";
+  try {
+    await stream("claude", {project, question, file: current, selection: sel}, line => {
+      if (line.startsWith("@@TOOL ")) { out.insertAdjacentHTML("beforebegin", `<span class="t">  ⚙ ${esc(line.slice(7))}</span>\n`); }
+      else { md += line + "\n"; out.innerHTML = linkify(md); }
+      chat.scrollTop = chat.scrollHeight;
+    });
+  } catch (e) { md += "[-] " + e.message; out.innerHTML = linkify(md); }
+  out.classList.remove("cursor");
+  busy = false; setButtons(); $("#bAsk").classList.remove("busy");
+}
+function linkify(s) {
+  return esc(s).replace(/((?:jadx|apktool)\/[\w$.\/\-]+\.\w+)(?::(\d+))?/g,
+    (m, p, l) => `<a data-f="${p}" data-l="${l || 0}">${m}</a>`);
+}
+$("#chat").onclick = e => { const a = e.target.closest("a[data-f]"); if (a) openFile(a.dataset.f, +a.dataset.l || undefined); };
+$("#bAsk").onclick = askClaude;
+$("#ask").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); askClaude(); } };
+
+// ---------- boot ----------
+(async () => {
+  const boot = $("#boot");
+  const lines = ["TONK-RE BIOS v1.0  (c) 1987 PHOSPHOR SYSTEMS", "MEMORY TEST ....... 640K OK", ""];
+  let t = {};
+  try { t = await get("/api/tools"); } catch {}
+  const st = (n, v) => `CHECKING ${n.padEnd(10, ".")} ${v ? "[ OK ]" : "[MISSING]"}`;
+  lines.push(st("jadx", t.jadx), st("apktool", t.apktool), st("apksigner", t.apksigner), st("zipalign", t.zipalign),
+             st("adb", t.adb), st("claude", t.claude), "", "LOADING TERMINAL...");
+  for (const l of lines) { boot.textContent += l + "\n"; await new Promise(r => setTimeout(r, 70)); }
+  $("#sTools").innerHTML = ["apksigner", "zipalign", "adb"].map(k => `<span class="${t[k] ? "" : "bad"}">${k}${t[k] ? "✓" : "✗"}</span>`).join(" ");
+  setTimeout(() => boot.classList.add("gone"), 350);
+  setButtons();
+  loadProjects();
+  log("tonk-re terminal ready. drop an apk or pick a project.");
+})();
+</script>
+</body>
+</html>
