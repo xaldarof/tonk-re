@@ -81,6 +81,43 @@ def tool(name: str) -> str | None:
     return build_tool(name)
 
 
+# ---------- tool availability / install hints ----------
+
+_OSKEY = "win32" if IS_WIN else "darwin" if IS_MAC else "linux"
+INSTALL_HINTS = {
+    "jadx": {"darwin": "brew install jadx", "win32": "scoop install jadx",
+             "linux": "download from github.com/skylot/jadx/releases and add bin/ to PATH"},
+    "apktool": {"darwin": "brew install apktool", "win32": "scoop install apktool",
+                "linux": "sudo apt install apktool  (or see apktool.org/docs/install)"},
+    "apksigner": {"darwin": "install Android SDK build-tools (Android Studio ▸ SDK Manager)",
+                  "win32": "install Android SDK build-tools (Android Studio ▸ SDK Manager)",
+                  "linux": "install Android SDK build-tools (Android Studio ▸ SDK Manager)"},
+    "zipalign": {k: "install Android SDK build-tools (Android Studio ▸ SDK Manager)"
+                 for k in ("darwin", "win32", "linux")},
+    "adb": {"darwin": "brew install android-platform-tools  (or Android SDK platform-tools)",
+            "win32": "install Android SDK platform-tools", "linux": "sudo apt install adb"},
+    "keytool": {k: "install a JDK (comes with Java)" for k in ("darwin", "win32", "linux")},
+    "frida": {k: "pipx install frida-tools  (only needed to RUN hooks)" for k in ("darwin", "win32", "linux")},
+    "claude": {k: "see claude.com/claude-code  (optional: the AI assistant)" for k in ("darwin", "win32", "linux")},
+}
+
+
+def hint(name: str) -> str:
+    return INSTALL_HINTS.get(name, {}).get(_OSKEY, "see the README")
+
+
+def require(out, names: list[str]) -> bool:
+    """Stream a clear, OS-specific message for any missing tool. Returns True only if all present."""
+    missing = [n for n in names if not tool(n)]
+    if not missing:
+        return True
+    out(f"[-] missing required tool(s): {', '.join(missing)}\n")
+    for n in missing:
+        out(f"    install {n}:  {hint(n)}\n")
+    out("    then restart TONK-RE (or re-run ./install.sh to re-check).\n")
+    return False
+
+
 # ---------- OS integration ----------
 
 def pick_file() -> str:
@@ -224,6 +261,8 @@ def dist_dir(project: str) -> Path:
 # ---------- long-running actions (streamed) ----------
 
 def act_decompile(out, body):
+    if not require(out, ["jadx", "apktool"]):
+        return
     out("[*] decompiling (jadx + apktool) ... this can take a few minutes\n")
     r = core.decompile(body["path"], force=body.get("force", False), deobf=body.get("deobf", False))
     for k, v in r.get("log", {}).items():
@@ -233,6 +272,8 @@ def act_decompile(out, body):
 
 
 def act_build(out, body):
+    if not require(out, ["apktool"]):
+        return False
     proj = core._project_dir(body["project"])
     dst = dist_dir(body["project"]) / "unsigned.apk"
     rc = stream_cmd(out, ["apktool", "b", "-f", str(proj / "apktool"), "-o", str(dst)])
@@ -241,6 +282,10 @@ def act_build(out, body):
 
 
 def act_sign(out, body):
+    if not require(out, ["keytool"]):  # apksigner/zipalign are optional (jarsigner fallback)
+        return False
+    if not tool("apksigner"):
+        out(f"[!] apksigner not found, will try the v1-only jarsigner fallback. For v2/v3: {hint('apksigner')}\n")
     d = dist_dir(body["project"])
     src = d / "unsigned.apk"
     if not src.exists():
@@ -257,6 +302,8 @@ def act_build_sign(out, body):
 
 
 def act_resign(out, body):
+    if not require(out, ["keytool"]):
+        return
     src = Path(body["path"]).expanduser()
     if not src.is_file():
         out(f"[-] not found: {src}\n")
@@ -267,10 +314,9 @@ def act_resign(out, body):
 
 
 def act_install(out, body):
-    adb = tool("adb")
-    if not adb:
-        out("[-] adb not found\n")
+    if not require(out, ["adb"]):
         return
+    adb = tool("adb")
     apk = dist_dir(body["project"]) / "signed.apk"
     if not apk.exists():
         out("[-] no dist/signed.apk: BUILD+SIGN first\n")
@@ -279,23 +325,51 @@ def act_install(out, body):
     stream_cmd(out, [adb, "install", "-r", "-d", str(apk)])
 
 
+_CLAUDE_SESSIONS: set[str] = set()  # session ids this process has already started
+PREPROMPT_FILE = HOME / "preprompt.txt"
+DEFAULT_PREPROMPT = (
+    "You are assisting a reverse engineer analyzing a decompiled Android app. "
+    "The current directory holds jadx/sources (Java) and apktool/ (manifest, res, smali).\n"
+    "{context}\n"
+    "Question: {question}\n\n"
+    "Cite file:line for every claim. Be concise. Analyze only; do not modify files.")
+
+
+def get_preprompt() -> str:
+    try:
+        return PREPROMPT_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return DEFAULT_PREPROMPT
+
+
 def act_claude(out, body):
-    """Ask Claude Code about the project; it runs read-only inside the project directory."""
-    claude = tool("claude")
-    if not claude:
-        out("[-] claude CLI not found on PATH\n")
+    """Ask Claude Code about the project; it runs read-only inside the project directory.
+    A session id keeps conversation context across questions; a new id starts fresh.
+    The question is wrapped in the user's saved pre-prompt template ({question}/{context})."""
+    if not require(out, ["claude"]):
         return
+    claude = tool("claude")
     proj = core._project_dir(body["project"])
     ctx = ""
     if body.get("file"):
-        ctx += f"\nThe user is viewing file: {body['file']}"
+        ctx += f"The user is viewing file: {body['file']}\n"
     if body.get("selection"):
-        ctx += f"\nSelected code:\n```\n{body['selection'][:8000]}\n```"
-    prompt = (f"You are assisting a reverse engineer analyzing a decompiled Android app. "
-              f"Current directory holds jadx/sources (Java) and apktool/ (manifest, res, smali).{ctx}\n\n"
-              f"Question: {body['question']}\n\nCite file:line for claims. Be concise.")
+        ctx += f"Selected code:\n```\n{body['selection'][:8000]}\n```\n"
+    tpl = get_preprompt()
+    q = body["question"]
+    # substitute placeholders; if the template omits {question}, append it so nothing is lost
+    prompt = tpl.replace("{context}", ctx).replace("{question}", q)
+    if "{question}" not in tpl:
+        prompt += "\n\n" + q
     cmd = [claude, "-p", prompt, "--output-format", "stream-json", "--verbose",
            "--allowedTools", "Read,Grep,Glob"]
+    sid = body.get("session")
+    if sid:
+        if sid in _CLAUDE_SESSIONS:
+            cmd += ["--resume", sid]       # continue the conversation
+        else:
+            cmd += ["--session-id", sid]   # first message: create the session
+            _CLAUDE_SESSIONS.add(sid)
     p = subprocess.Popen(cmd, cwd=proj, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                          encoding="utf-8", errors="replace")
     for line in p.stdout:
@@ -420,9 +494,12 @@ class H(BaseHTTPRequestHandler):
                 self._json(core.counterpart(p, q["path"]))
             elif u.path == "/api/diff":
                 self._json(core.diff_versions(q["a"], q["b"]))
+            elif u.path == "/api/preprompt":
+                self._json({"text": get_preprompt(), "default": DEFAULT_PREPROMPT})
             elif u.path == "/api/tools":
-                self._json({t: tool(t) for t in ("jadx", "apktool", "apksigner", "zipalign", "adb", "claude")}
-                           | {"frida": shutil.which("frida"), "os": sys.platform})
+                names = ("jadx", "apktool", "apksigner", "zipalign", "adb", "keytool", "frida", "claude")
+                self._json({t: tool(t) for t in names} | {"os": sys.platform,
+                           "hints": {t: hint(t) for t in names if not tool(t)}})
             else:
                 self._json({"error": "not found"}, 404)
         except Exception as e:
@@ -454,6 +531,10 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/frida":
                 return self._json(core.frida_script(body["project"], body.get("class", ""),
                                                     body.get("method", ""), body.get("template", "trace")))
+            if u.path == "/api/preprompt":
+                HOME.mkdir(parents=True, exist_ok=True)
+                PREPROMPT_FILE.write_text(body["text"], encoding="utf-8")
+                return self._json({"ok": True})
             if u.path.startswith("/api/run/"):
                 return self._stream(ACTIONS[u.path.rsplit("/", 1)[1]], body)
             self._json({"error": "not found"}, 404)

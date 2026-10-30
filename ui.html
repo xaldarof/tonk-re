@@ -153,6 +153,13 @@ body.resizing{cursor:col-resize;user-select:none}
 .busy{animation:pulse .8s infinite alternate}
 @keyframes pulse{from{opacity:1}to{opacity:.4}}
 
+#setup{position:fixed;bottom:200px;right:16px;max-width:440px;z-index:44;background:var(--panel);
+  border:1px solid var(--amber);box-shadow:0 0 20px rgba(0,0,0,.8);padding:8px 12px;font-size:17px}
+#setup[hidden]{display:none}
+#setup h4{margin:0 0 4px;color:var(--amber);font-weight:normal;display:flex;align-items:center}
+#setup h4 button{margin-left:auto;border:none;font-size:15px;padding:0 4px}
+#setup .tool{color:var(--red)} #setup code{color:var(--hi);font-family:'IBM Plex Mono';font-size:12px;display:block;margin:1px 0 6px}
+#setup .opt{color:var(--dim)}
 #diffModal{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:45;display:none;align-items:center;justify-content:center}
 #diffModal.on{display:flex}
 #diffModal .dlg{width:min(900px,92vw);max-height:86vh;background:var(--panel);border:1px solid var(--dim);
@@ -213,6 +220,8 @@ body.resizing{cursor:col-resize;user-select:none}
     <button id="bResign" class="warn">[ RESIGN APK ]</button>
     <button id="bDiff">[ DIFF ⇄ ]</button>
   </div>
+
+  <div id="setup" hidden></div>
 
   <section id="side" class="pane">
     <h3>// PROJECTS</h3>
@@ -290,9 +299,20 @@ body.resizing{cursor:col-resize;user-select:none}
       <div id="fridaOut" class="list"></div>
     </div>
     <div class="rp" id="r-ai">
+      <div class="row" style="border-bottom:1px solid var(--line);padding-bottom:4px">
+        <span class="meta" style="color:var(--dim)">session: <span id="sessId">new</span></span>
+        <button id="bPrePrompt" style="margin-left:auto;font-size:16px;padding:0 6px">[ PRE-PROMPT ]</button>
+        <button id="bNewSess" style="font-size:16px;padding:0 6px">[ + NEW SESSION ]</button>
+      </div>
+      <div id="ppEditor" hidden style="border-bottom:1px solid var(--line);padding:4px 0">
+        <div class="meta" style="color:var(--dim)">Template wrapped around every question. Use <b>{question}</b> and <b>{context}</b>.</div>
+        <textarea id="ppText" style="width:100%;height:120px;font-family:'IBM Plex Mono';font-size:12px"></textarea>
+        <div class="row"><button id="bPpSave" style="font-size:16px;padding:0 6px">[ SAVE ]</button>
+          <button id="bPpReset" style="font-size:16px;padding:0 6px">[ RESET DEFAULT ]</button></div>
+      </div>
       <div id="chat"><span class="t">claude@tonk-re:~$ ask anything about the decompiled app.
-claude can read and grep the project (read-only).
-select code in the editor to send it as context.</span></div>
+claude can read and grep the project (read-only), and remembers the conversation.
+select code in the editor to send it as context. [ NEW SESSION ] starts fresh.</span></div>
       <textarea id="ask" placeholder="e.g. how does the login request get signed? where is the API key used?"></textarea>
       <div class="row">
         <label class="chk"><input type="checkbox" id="withSel" checked>SEND SELECTION</label>
@@ -452,6 +472,7 @@ async function openProject(p) {
   $("#tree").innerHTML = ""; $("#bCounterpart").style.display = "none";
   $("#intentOut").innerHTML = ""; delete $("#intentOut").dataset.loaded;
   $("#fridaOut").innerHTML = ""; $("#fridaCls").value = ""; $("#fridaMethod").value = "";
+  if (typeof claudeSession !== "undefined") { claudeSession = crypto.randomUUID(); $("#sessId").textContent = "new"; }
   if (!p) return;
   await renderDir($("#tree"), "");
   loadInfo();
@@ -771,6 +792,30 @@ $("#q").onkeydown = e => e.key === "Enter" && doFind();
 
 // ---------- claude ----------
 // claude output streams into the chat panel, not the console
+let claudeSession = crypto.randomUUID();
+$("#bNewSess").onclick = () => {
+  claudeSession = crypto.randomUUID();
+  $("#sessId").textContent = "new";
+  $("#chat").innerHTML = `<span class="t">claude@tonk-re:~$ new session. previous context cleared.</span>`;
+  log("[*] started a new Claude session");
+};
+// pre-prompt editor
+$("#bPrePrompt").onclick = async () => {
+  const ed = $("#ppEditor");
+  if (ed.hidden && !$("#ppText").value) {
+    try { $("#ppText").value = (await get("/api/preprompt")).text; } catch (e) { log("[-] " + e.message); }
+  }
+  ed.hidden = !ed.hidden;
+};
+$("#bPpSave").onclick = async () => {
+  try { await post("/api/preprompt", {text: $("#ppText").value}); log("[+] pre-prompt saved"); $("#ppEditor").hidden = true; }
+  catch (e) { log("[-] " + e.message); }
+};
+$("#bPpReset").onclick = async () => {
+  try { const r = await get("/api/preprompt"); $("#ppText").value = r.default; log("[*] reset to default (not saved yet — hit SAVE)"); }
+  catch (e) { log("[-] " + e.message); }
+};
+
 async function askClaude() {
   if (busy) return log("[!] busy");
   const question = $("#ask").value.trim(); if (!question || !project) return;
@@ -779,9 +824,10 @@ async function askClaude() {
   $("#ask").value = "";
   const out = document.createElement("span"); out.className = "cursor"; chat.appendChild(out);
   busy = true; setButtons(); $("#bAsk").classList.add("busy");
+  $("#sessId").textContent = claudeSession.slice(0, 8);
   let md = "";
   try {
-    await stream("claude", {project, question, file: current, selection: sel}, line => {
+    await stream("claude", {project, question, file: current, selection: sel, session: claudeSession}, line => {
       if (line.startsWith("@@TOOL ")) { out.insertAdjacentHTML("beforebegin", `<span class="t">  ⚙ ${esc(line.slice(7))}</span>\n`); }
       else { md += line + "\n"; out.innerHTML = linkify(md); }
       chat.scrollTop = chat.scrollHeight;
@@ -809,11 +855,31 @@ $("#ask").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDe
              st("adb", t.adb), st("frida", t.frida), st("claude", t.claude), "", "LOADING TERMINAL...");
   for (const l of lines) { boot.textContent += l + "\n"; await new Promise(r => setTimeout(r, 70)); }
   $("#sTools").innerHTML = ["apksigner", "zipalign", "adb"].map(k => `<span class="${t[k] ? "" : "bad"}">${k}${t[k] ? "✓" : "✗"}</span>`).join(" ");
+  renderSetup(t);
   setTimeout(() => boot.classList.add("gone"), 350);
   setButtons();
   loadProjects();
   log("tonk-re terminal ready. drop an apk or pick a project.");
 })();
+
+// setup banner: show which tools are missing and how to install them
+function renderSetup(t) {
+  const el = $("#setup"), hints = t.hints || {};
+  const REQUIRED = ["jadx", "apktool"], SIGN = ["keytool"], OPT = ["apksigner", "zipalign", "adb", "frida", "claude"];
+  const miss = n => !t[n];
+  const reqMiss = [...REQUIRED, ...SIGN].filter(miss), optMiss = OPT.filter(miss);
+  // only nag automatically when something genuinely needed is missing; optional tools are listed too, but
+  // a box with ONLY optional tools missing stays hidden (they're already shown on the boot screen).
+  if (!reqMiss.length) { el.hidden = true; return; }
+  const req = new Set(REQUIRED.concat(SIGN));
+  const row = n => `<div><span class="${req.has(n) ? "tool" : "opt"}">${n}${req.has(n) ? " (required)" : " (optional)"}</span>
+    <code>${esc(hints[n] || "see README")}</code></div>`;
+  el.innerHTML = `<h4>⚠ SETUP: missing required tools <button id="setupX">[ X ]</button></h4>
+    ${reqMiss.map(row).join("")}${optMiss.map(row).join("")}
+    <div class="opt" style="margin-top:4px">Install, then restart TONK-RE (or re-run install.sh).</div>`;
+  el.hidden = false;
+  $("#setupX").onclick = () => el.hidden = true;
+}
 </script>
 </body>
 </html>

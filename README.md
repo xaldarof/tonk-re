@@ -29,7 +29,7 @@ Runs on **macOS**, **Windows** and **Linux**.
 - **Frida hook generator** — generate a hook script for a method or whole class (trace args/return, stacktrace, override a return value) or a universal SSL-pinning / root-detection bypass; saved into the project with ready `frida` spawn/attach commands.
 - **Java ⇄ smali bridge** — read a class in clean decompiled Java, then jump straight to its smali (multidex- and inner-class-aware) to patch it and rebuild.
 - **Rebuild & sign** — `BUILD` (apktool), `SIGN` (zipalign + apksigner v1–v3), `BUILD+SIGN`, `INSTALL ▸ ADB`, and `RESIGN APK` for any existing APK. A debug keystore is generated automatically.
-- **Ask Claude** — a built-in chat panel runs the `claude` CLI read-only inside the project, with your editor selection as context, and links file:line references straight into the editor.
+- **Ask Claude** — a built-in chat panel runs the `claude` CLI read-only inside the project, with your editor selection as context, and links file:line references straight into the editor. The conversation has memory (**+ NEW SESSION** starts fresh), and an editable **pre-prompt** template (saved per machine) wraps every question so you can pin a role/output format (e.g. an OWASP MASVS audit).
 - **MCP server** — the same engine is exposed to Claude Code as the `tonk-re` tool set, so you can decompile and audit from any `claude` session.
 - **Retro CRT UI** — scanlines, glow, boot sequence, and a green/amber phosphor toggle. Resizable panels.
 
@@ -64,7 +64,7 @@ Runs on **macOS**, **Windows** and **Linux**.
 | Chrome / Edge / Brave / Chromium | app-window mode (optional) | optional | Edge is built in | optional |
 | zenity *or* kdialog | the `BROWSE` file dialog | built in | built in | `sudo apt install zenity` |
 
-Everything except uv is optional to *start* the app — TONK-RE probes for each tool on launch and tells you what's missing. jadx + apktool are needed to decompile; apksigner/zipalign to sign; adb to install.
+Everything except uv is optional to *start* the app — TONK-RE probes for each tool on launch. The boot screen shows an `[ OK ]` / `[MISSING]` check for each, a **setup banner** lists any missing required tool with the exact install command for your OS, and if you try an action whose tool is missing (e.g. DECOMPILE without jadx) you get a clear message with the install command instead of an error. jadx + apktool are needed to decompile; a JDK (keytool) + apksigner/zipalign to sign; adb to install; frida only to *run* generated hooks.
 
 > **macOS note:** only macOS gets the native Dock app (`.app`). Windows and Linux run in an app window of your Chromium-family browser, or a normal browser tab.
 
@@ -124,7 +124,7 @@ Or launch **TONK-RE** from the Dock (macOS).
 3. **Scan** — the **SCAN** tab runs secret / URL / crypto-security sweeps; the **SEARCH** tab is a regex grep over Java, smali or resources. Click any result to open it at that line.
 4. **Patch** — edit smali or resources in the editor and `⌘S` to save.
 5. **Rebuild** — `BUILD` recompiles with apktool, `SIGN` signs it, `BUILD+SIGN` does both, `OPEN DIST` shows the output (`<project>/dist/signed.apk`), and `INSTALL ▸ ADB` pushes it to a connected device.
-6. **Ask Claude** — the **CLAUDE** tab answers questions about the app and cites file:line; select code in the editor first to send it as context.
+6. **Ask Claude** — the **CLAUDE** tab answers questions about the app and cites file:line; select code in the editor first to send it as context. Use **+ NEW SESSION** to reset the conversation, and **PRE-PROMPT** to edit the saved template (with `{question}` / `{context}` placeholders) that wraps every question.
 
 > Only smali and resource edits are recompiled into the APK. Edits to the decompiled **Java** are for reading/reference — the app reminds you when you save one.
 

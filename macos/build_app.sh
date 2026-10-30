@@ -50,6 +50,10 @@ export TONKRE_ICON="\$(dirname "\$0")/../Resources/AppIcon.png"
 mkdir -p "\$HOME/.tonkre"
 exec >"\$HOME/.tonkre/app.log" 2>&1
 cd "$ROOT"
+if ! command -v uv >/dev/null 2>&1; then
+  osascript -e 'display dialog "TONK-RE needs \"uv\" to run, but it is not installed.\n\nInstall it in Terminal with:\n\ncurl -LsSf https://astral.sh/uv/install.sh | sh\n\nThen run:  ~/tonk-re/install.sh" with title "TONK-RE — setup needed" buttons {"OK"} default button "OK" with icon caution' >/dev/null 2>&1
+  exit 1
+fi
 PY=\$(uv python find --python-preference only-managed --script gui.py 2>/dev/null)
 if [ ! -x "\$PY" ]; then uv sync --quiet --python-preference only-managed --script gui.py; PY=\$(uv python find --python-preference only-managed --script gui.py); fi
 # exec keeps this PID, so the Dock shows TONK-RE's icon rather than Python's
