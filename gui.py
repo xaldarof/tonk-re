@@ -216,10 +216,23 @@ def stream_cmd(out, cmd: list[str], cwd: str | None = None) -> int:
     return p.returncode
 
 
+def _keystore_has_alias() -> bool:
+    if not KEYSTORE.exists():
+        return False
+    r = subprocess.run(["keytool", "-list", "-keystore", str(KEYSTORE), "-storepass", KS_PASS, "-alias", KS_ALIAS],
+                       capture_output=True, text=True)
+    return r.returncode == 0
+
+
 def ensure_keystore(out) -> None:
-    if KEYSTORE.exists():
+    if _keystore_has_alias():
         return
     HOME.mkdir(parents=True, exist_ok=True)
+    if KEYSTORE.exists():
+        # keystore exists but lacks our alias (e.g. created under an old name) — back it up and recreate
+        bak = KEYSTORE.with_suffix(".keystore.bak")
+        out(f"[!] existing keystore has no '{KS_ALIAS}' alias; backing it up to {bak.name} and creating a fresh one\n")
+        KEYSTORE.replace(bak)
     out("[*] generating debug keystore ...\n")
     stream_cmd(out, ["keytool", "-genkeypair", "-v", "-keystore", str(KEYSTORE), "-storepass", KS_PASS,
                      "-keypass", KS_PASS, "-alias", KS_ALIAS, "-keyalg", "RSA", "-keysize", "2048",
@@ -277,8 +290,47 @@ def act_build(out, body):
     proj = core._project_dir(body["project"])
     dst = dist_dir(body["project"]) / "unsigned.apk"
     rc = stream_cmd(out, ["apktool", "b", "-f", str(proj / "apktool"), "-o", str(dst)])
-    out(f"[{'+' if rc == 0 else '-'}] build {'OK -> ' + str(dst) if rc == 0 else 'FAILED'}\n")
-    return rc == 0
+    if rc == 0:
+        out(f"[+] build OK -> {dst}\n")
+        return True
+    # apktool full build usually fails at aapt2 resource re-linking (APKTOOL_MISSING placeholders,
+    # strict enum/flag checks). The smali is compiled to dex before that step, so for code-only
+    # patches we can swap the fresh dex into a copy of the ORIGINAL apk and skip resource rebuild.
+    out("[!] apktool full build failed — this is almost always resource re-linking, not your code.\n")
+    out("[*] falling back to CODE-ONLY build: patching recompiled dex into the original APK "
+        "(resources stay as the original; smali/code edits are applied, resource edits are NOT).\n")
+    return _dex_swap_build(out, proj, dst)
+
+
+def _dex_swap_build(out, proj: Path, dst: Path) -> bool:
+    build_apk = proj / "apktool" / "build" / "apk"
+    dexes = sorted(build_apk.glob("classes*.dex"))
+    if not dexes:
+        out("[-] no compiled dex in apktool/build/apk — code-only build not possible "
+            "(fix the smali error above, or update apktool for a full resource rebuild).\n")
+        return False
+    orig = Path(json.loads((proj / "meta.json").read_text(encoding="utf-8"))["apk"])
+    if not orig.is_file():
+        out(f"[-] original APK not found ({orig}); cannot do a code-only build.\n")
+        return False
+    out(f"[*] swapping {len(dexes)} dex file(s): {', '.join(d.name for d in dexes)}\n")
+    newdex = {d.name: d.read_bytes() for d in dexes}
+    tmp = dst.with_suffix(".tmp.apk")
+    with zipfile.ZipFile(orig) as zin, zipfile.ZipFile(tmp, "w") as zout:
+        for item in zin.infolist():
+            up = item.filename.upper()
+            if up.startswith("META-INF/") and up.endswith((".SF", ".RSA", ".DSA", ".EC", "MANIFEST.MF")):
+                continue  # drop the old signature
+            data = newdex.pop(item.filename, None)
+            # keep each original entry's compression (resources.arsc must stay STORED on modern Android)
+            zout.writestr(item, data if data is not None else zin.read(item.filename))
+        for name, data in newdex.items():  # any new dex not present in the original
+            zout.writestr(name, data)
+    tmp.replace(dst)
+    out(f"[+] code-only build OK -> {dst}\n")
+    out("[*] note: if you edited resources/manifest, use a newer apktool (3.x) for a full rebuild; "
+        "this code-only APK keeps the original resources.\n")
+    return True
 
 
 def act_sign(out, body):
