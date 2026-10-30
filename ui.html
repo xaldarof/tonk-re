@@ -823,6 +823,7 @@ async function askClaude() {
   chat.insertAdjacentHTML("beforeend", `\n\n<span class="q">&gt; ${esc(question)}</span>${sel ? `<span class="t">  [+${sel.split("\n").length} lines]</span>` : ""}\n`);
   $("#ask").value = "";
   const out = document.createElement("span"); out.className = "cursor"; chat.appendChild(out);
+  chat.scrollTop = chat.scrollHeight;  // jump to the new prompt immediately
   busy = true; setButtons(); $("#bAsk").classList.add("busy");
   $("#sessId").textContent = claudeSession.slice(0, 8);
   let md = "";
