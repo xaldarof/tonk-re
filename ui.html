@@ -779,6 +779,8 @@ $("#bPatch").onclick = e => {
   const r = e.currentTarget.getBoundingClientRect();
   showMenu(r.left, r.bottom, "ONE-CLICK PATCH", [
     {label: "Make interceptable (MITM / Burp)", fn: patchMitm},
+    {sep: true},
+    {label: "Revert ALL tonk-re patches", fn: patchRevert},
   ]);
 };
 async function patchMitm() {
@@ -812,6 +814,50 @@ async function patchMethod(cls, method, action) {
     Object.keys(files).filter(p => /\.smali$/.test(p)).forEach(p => delete files[p]);
     if (wasCurrent) { current = null; await openFile(wasCurrent); } else renderTabs();
   } catch (e) { log("[-] " + e.message); }
+}
+
+async function patchRevert() {
+  if (busy) return log("[!] busy, wait for the current job");
+  if (!confirm("Revert ALL tonk-re patches for this project?\n\nRestores the freshly-decompiled manifest, " +
+    "smali and resources (undoes MITM + guided smali patches). Then BUILD+SIGN for a clean APK.")) return;
+  try {
+    const r = await post("/api/patch", {project, op: "revert"});
+    if (r.error) return log("[-] " + r.error);
+    if (r.count) log(`[+] reverted: restored ${r.restored.length} file(s), deleted ${r.deleted.length}`);
+    log(`[*] ${r.next}`);
+    // drop cached editor docs (except native views) so they re-read the restored bytes
+    const cur = current;
+    Object.keys(files).forEach(p => { if (!files[p].synthetic) delete files[p]; });
+    await refreshDir("apktool");
+    if (cur && !files[cur]) { current = null; renderTabs(); showEmpty(true); } else renderTabs();
+  } catch (e) { log("[-] " + e.message); }
+}
+async function neutralizeCall(cls, method) {
+  if (busy) return log("[!] busy, wait for the current job");
+  if (!confirm(`Neutralize all calls to ${method}() inside ${cls.split(".").pop()}?\n\nRemoves the invoke ` +
+    `(a consumed result becomes 0/null). Then BUILD+SIGN. Reversible via PATCH ▸ Revert.`)) return;
+  try {
+    const r = await post("/api/patch", {project, op: "neutralize", class: cls, callee: method});
+    if (r.error) return log("[-] " + r.error);
+    if (!r.count) return log(`[!] ${r.next}`);
+    log(`[+] neutralized ${r.count} call site(s):`); r.removed.forEach(x => log("    " + x)); log(`[*] ${r.next}`);
+    const wasCurrent = current && /\.smali$/.test(current) ? current : null;
+    Object.keys(files).filter(p => /\.smali$/.test(p)).forEach(p => delete files[p]);
+    if (wasCurrent) { current = null; await openFile(wasCurrent); } else renderTabs();
+  } catch (e) { log("[-] " + e.message); }
+}
+async function decompileNative(path, symbol) {
+  if (busy) return log("[!] busy, wait for the current job");
+  log(`[*] decompiling ${symbol} in ${path} (radare2) ...`);
+  let r;
+  try { r = await post("/api/decompile_native", {project, path, symbol}); } catch (e) { return log("[-] " + e.message); }
+  if (!r.available) return log(`[!] ${r.reason}. ${r.hint || ""}`);
+  if (r.error) return log(`[-] ${r.error}`);
+  const key = `native://${path}#${symbol}`;
+  files[key] = {doc: CodeMirror.Doc(r.text || "(no output)", "text/plain"),
+                dirty: false, loading: false, synthetic: true, mode: "PSEUDO-" + (r.backend || "r2"), realPath: path};
+  files[key].doc.markClean();
+  await openFile(key);
 }
 
 // ---------- method actions (editor right-click: Frida / Claude / guided smali) ----------
@@ -849,8 +895,19 @@ function askClaudeHook(cls, method) {
   log("[*] prefilled a Claude prompt for a Frida hook — review it and hit ASK CLAUDE ⏎");
 }
 cm.getWrapperElement().addEventListener("contextmenu", e => {
-  if (!project || !current || !files[current] || files[current].synthetic) return;
-  if (!/\.(java|smali)$/.test(current)) return;
+  if (!project || !current || !files[current]) return;
+  // native analysis view: decompile the symbol under the cursor with radare2
+  if (files[current].synthetic && /^NATIVE/.test(files[current].mode || "")) {
+    const w = cm.findWordAt(cm.coordsChar({left: e.clientX, top: e.clientY}));
+    const sym = cm.getRange(w.anchor, w.head).trim();
+    if (!/^[A-Za-z_][\w$]*$/.test(sym)) return;
+    e.preventDefault();
+    showMenu(e.clientX, e.clientY, sym, [
+      {label: `⟶ Decompile ${sym} (radare2)`, fn: () => decompileNative(files[current].realPath, sym)},
+    ]);
+    return;
+  }
+  if (files[current].synthetic || !/\.(java|smali)$/.test(current)) return;
   const info = methodAt(e);
   if (!info) return;
   e.preventDefault();
@@ -864,6 +921,8 @@ cm.getWrapperElement().addEventListener("contextmenu", e => {
     {label: `✎ Smali patch: force → false`, fn: () => patchMethod(cls, method, "force_false")},
     {label: `✎ Smali patch: return null`, fn: () => patchMethod(cls, method, "return_null")},
     {label: `✎ Smali patch: return 0`, fn: () => patchMethod(cls, method, "return_zero")},
+    {sep: true},
+    {label: `✂ Smali: neutralize calls to ${method}()`, fn: () => neutralizeCall(cls, method)},
   ]);
 });
 

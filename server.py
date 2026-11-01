@@ -795,19 +795,42 @@ def decompile_native(project: str, path: str, symbol: str = "") -> str:
 def make_interceptable(project: str) -> str:
     """One-click MITM prep: set the app debuggable, add a network-security-config that trusts
     user CA certs, and allow cleartext, so Burp/mitmproxy can intercept TLS. Edits the manifest
-    and resources, so rebuild with a FULL apktool BUILD (not the code-only fallback), then SIGN."""
-    return _truncate(json.dumps(patches.make_interceptable(_project_dir(project) / "apktool"), indent=2))
+    and resources, so rebuild with a FULL apktool BUILD (not the code-only fallback), then SIGN.
+    Reversible with revert_patches."""
+    return _truncate(json.dumps(patches.make_interceptable(_project_dir(project)), indent=2))
 
 
 @mcp.tool()
 def patch_method(project: str, class_name: str, method: str, action: str = "force_true") -> str:
     """Guided smali patch: rewrite every overload of a method to immediately return a constant.
     actions: 'force_true', 'force_false', 'return_zero', 'return_null', 'noop' (void methods).
-    Ideal for root/premium/license gates. Then BUILD+SIGN. Static counterpart to a Frida hook."""
-    files = [_project_dir(project) / p for p in smali_paths(project, class_name)]
+    Ideal for root/premium/license gates. Then BUILD+SIGN. Static counterpart to a Frida hook.
+    Reversible with revert_patches."""
+    proj = _project_dir(project)
+    files = [proj / p for p in smali_paths(project, class_name)]
     if not files:
         return f"No smali found for {class_name}."
-    return _truncate(json.dumps(patches.patch_method_return(files, method, action), indent=2))
+    return _truncate(json.dumps(patches.patch_method_return(proj, files, method, action), indent=2))
+
+
+@mcp.tool()
+def neutralize_call(project: str, class_name: str, callee: str) -> str:
+    """Delete call sites to `callee` inside a class's smali (an invoke-* whose result, if used,
+    becomes 0/null). `callee` is a bare method name ('reportEvent') or a full ref
+    ('Lcom/x/Y;->reportEvent'). Good for ripping out integrity/analytics/kill-switch calls.
+    Then BUILD+SIGN. Reversible with revert_patches."""
+    proj = _project_dir(project)
+    files = [proj / p for p in smali_paths(project, class_name)]
+    if not files:
+        return f"No smali found for {class_name}."
+    return _truncate(json.dumps(patches.neutralize_calls(proj, files, callee), indent=2))
+
+
+@mcp.tool()
+def revert_patches(project: str) -> str:
+    """Undo every tonk-re static patch (make_interceptable / patch_method / neutralize_call) for a
+    project, restoring the freshly-decompiled manifest/smali/resources. Then BUILD+SIGN for a clean APK."""
+    return _truncate(json.dumps(patches.revert(_project_dir(project)), indent=2))
 
 
 # ---------- CLI ----------
@@ -818,6 +841,7 @@ def cli(argv: list[str]) -> None:
              "intents PROJECT | diff PROJECT_A PROJECT_B | frida PROJECT [CLASS] [METHOD] [TEMPLATE] | "
              "smali PROJECT CLASS | native PROJECT SO_PATH | mitm PROJECT | "
              "patch PROJECT CLASS METHOD [force_true|force_false|return_zero|return_null|noop] | "
+             "neutralize PROJECT CLASS CALLEE | revert PROJECT | "
              "setup [status|all|COMPONENT...] [--accept-android-license]>")
     if not argv:
         sys.exit(usage)
@@ -855,6 +879,10 @@ def cli(argv: list[str]) -> None:
         print(make_interceptable(rest[0]))
     elif cmd == "patch" and len(rest) >= 3:
         print(patch_method(rest[0], rest[1], rest[2], rest[3] if len(rest) > 3 else "force_true"))
+    elif cmd == "neutralize" and len(rest) >= 3:
+        print(neutralize_call(rest[0], rest[1], rest[2]))
+    elif cmd == "revert" and rest:
+        print(revert_patches(rest[0]))
     else:
         sys.exit(usage)
 

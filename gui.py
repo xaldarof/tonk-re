@@ -651,13 +651,17 @@ class H(BaseHTTPRequestHandler):
                 proj = core._project_dir(body["project"])
                 op = body.get("op")
                 if op == "mitm":
-                    return self._json(core.patches.make_interceptable(proj / "apktool"))
-                if op == "method":
+                    return self._json(core.patches.make_interceptable(proj))
+                if op == "revert":
+                    return self._json(core.patches.revert(proj))
+                if op in ("method", "neutralize"):
                     files = [proj / x for x in core.smali_paths(body["project"], body["class"])]
                     if not files:
                         return self._json({"error": f"no smali found for {body['class']}"}, 400)
-                    return self._json(core.patches.patch_method_return(files, body["method"],
-                                                                       body.get("action", "force_true")))
+                    if op == "method":
+                        return self._json(core.patches.patch_method_return(
+                            proj, files, body["method"], body.get("action", "force_true")))
+                    return self._json(core.patches.neutralize_calls(proj, files, body["callee"]))
                 return self._json({"error": f"unknown patch op: {op}"}, 400)
             if u.path == "/api/decompile_native":
                 f = core._safe_join(core._project_dir(body["project"]), body["path"])

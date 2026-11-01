@@ -22,9 +22,11 @@ Tools come from the `tonk-re` MCP server (`mcp__tonk-re__*`).
 7. **Patch**: `smali_for_class` maps a Java class to its smali for manual edits. For common gates use
    `patch_method(project, class, method, action)` — `force_true` / `force_false` / `return_zero` /
    `return_null` / `noop` rewrites the method to return a constant (root/premium/license checks).
-   For MITM, `make_interceptable(project)` sets debuggable + a user-CA network-security-config.
-   Both land as on-disk edits; the user then BUILDs + SIGNs (manifest/resource edits need a full
-   apktool build, not the code-only fallback).
+   `neutralize_call(project, class, callee)` deletes call sites to a method (rip out an integrity/
+   analytics/kill-switch call). For MITM, `make_interceptable(project)` sets debuggable + a user-CA
+   network-security-config. All patches are reversible with `revert_patches(project)`. They land as
+   on-disk edits; the user then BUILDs + SIGNs (manifest/resource edits need a full apktool build,
+   not the code-only fallback).
 8. **Compare versions**: `diff_apks(project_a, project_b)` for permission/component/class/URL deltas.
 9. **Native / non-Java**: for `.so` libraries use `analyze_native(project, so_path)` (arch, JNI
    entry points, exports/imports, NEEDED libs, exploit mitigations, URLs/strings) and

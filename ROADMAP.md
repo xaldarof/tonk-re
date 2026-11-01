@@ -16,17 +16,19 @@ Contributions welcome; open an issue to claim one.
 - Frida hook generator (trace / stacktrace / return-override / SSL & root bypass)
 - **Native `.so` analysis** — pure-stdlib ELF parser: arch, JNI entry points, exports/imports, NEEDED libs, exploit mitigations (NX/RELRO/canary/FORTIFY), URLs/strings + secret scan; shown read-only in the editor. Optional radare2 pseudo-code backend (`decompile_native`).
 - **One-click "Make interceptable" (MITM) patch** — debuggable + a `network_security_config` trusting user CA certs + cleartext, via the `[ PATCH ▾ ]` menu (`make_interceptable`).
-- **Guided smali patches** — right-click a method → force return true/false, return null/0, no-op → smali rewrite, then BUILD (`patch_method`). Static counterpart to the Frida generator.
-- **Editor method menu** — right-click a Java/smali method for Frida (trace / override return), "ask Claude for a Frida hook", and the guided smali patches above.
+- **Guided smali patches** — right-click a method → force return true/false, return null/0, no-op, or **neutralize calls** to it → smali rewrite, then BUILD (`patch_method` / `neutralize_call`). Static counterpart to the Frida generator.
+- **Reversible patches** — every static patch snapshots what it touches; `PATCH ▸ Revert` (`revert_patches`) restores the freshly-decompiled tree.
+- **Editor method menu** — right-click a Java/smali method for Frida (trace / override return), "ask Claude for a Frida hook", guided smali patches, neutralize-call; right-click a symbol in the native report to pseudo-decompile it (radare2).
+- **CI** — GitHub Actions smoke test: byte-compile, headless engine unit tests, full uv import, inline-UI-JS parse.
 - Built-in Claude assistant (conversation memory, editable pre-prompt, orange tree-flash on file reads)
 - Missing-tool handling + setup banner, apktool version warning + updater
 - Cross-platform (macOS/Windows/Linux), native macOS Dock app, MCP server for Claude Code
 
 ## Biggest capability gaps (next)
 
-- [ ] **Native pseudo-code in the GUI** — surface `decompile_native` (radare2) in the editor with a function picker; bundle/offer a Ghidra-headless backend for richer output. (ELF structural analysis already ships.)
-- [ ] **More guided patches** — "neutralize a specific call" (remove an `invoke-*` + its `move-result`), signature/integrity-check bypass, and overload-specific targeting (by descriptor, not just name).
-- [ ] **Patch review/undo** — show a diff of what a one-click patch changed, and a one-click revert (re-decompile or keep a backup of edited smali/manifest).
+- [ ] **Richer native decompilation** — bundle/offer a Ghidra-headless backend for cleaner pseudo-code than radare2, and a clickable function list in the native report (symbol → decompile) rather than right-click only.
+- [ ] **Overload-specific patch targeting** — target a single overload by descriptor, not just by method name; and a signature/integrity-check bypass recipe.
+- [ ] **Patch diff view** — show a before/after diff of what a one-click patch changed (undo already ships via `revert_patches`).
 
 ## Dynamic analysis (uses adb / maestro)
 

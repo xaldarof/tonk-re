@@ -80,16 +80,20 @@ New analysis capability → new engine module (or extend an existing one) + a th
   branch and extend the `usage` string. Keep output under `MAX_OUT` via `_truncate`.
 - **A new GUI action:** add the endpoint in `gui.py` (`do_GET`/`do_POST`, after auth, via `core.*`),
   then wire the UI in `ui.html`. Long jobs stream via `_stream`/`ACTIONS`; quick ops return JSON.
-- **A new one-click / guided patch:** add a function to `patches.py` (pure, takes paths), expose it
-  through `/api/patch` (op switch) and the `@mcp.tool()` facade, and surface it in the UI (the
-  `[ PATCH ▾ ]` menu for whole-app patches, the editor right-click menu for method-level ones).
+- **A new one-click / guided patch:** add a function to `patches.py` (pure, takes the project dir +
+  resolved paths), call `_snapshot(proj, modified, created)` before writing so `revert()` can undo
+  it, expose it through `/api/patch` (op switch) and the `@mcp.tool()` facade, and surface it in the
+  UI (the `[ PATCH ▾ ]` menu for whole-app patches, the editor right-click menu for method-level
+  ones). Add a case to `tests/test_engines.py`.
 
 ## Verify before you finish
 
-- `python -c "import py_compile; py_compile.compile('<file>.py', doraise=True)"` for each changed
-  module (deps aren't needed to compile).
-- Full import through uv: `uv run --script server.py cli` (prints usage; forces all imports).
+- `python -m py_compile server.py gui.py native.py patches.py tools.py tests/test_engines.py`
+  (deps aren't needed to compile).
+- `python tests/test_engines.py` — the pure-stdlib engine smoke test (no external tools/network).
+- Full import through uv: `uv run --script server.py cli projects` (exit 0; forces all imports).
 - `ui.html`: confirm the inline `<script>` still parses (e.g. `new Function(...)` on its contents).
+- These four are exactly what CI (`.github/workflows/ci.yml`) runs on every push/PR.
 - Update `ROADMAP.md` (move the item to **Shipped**) and `skill/SKILL.md` when you add a tool.
 
 ## Conventions
