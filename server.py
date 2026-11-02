@@ -32,6 +32,7 @@ import tools  # noqa: E402
 import native  # noqa: E402  (pure-stdlib ELF/.so analysis)
 import patches  # noqa: E402  (manifest + smali patch engine)
 import report  # noqa: E402  (Markdown audit-report renderer)
+import apis  # noqa: E402  (sensitive-API usage catalog + permission cross-reference)
 
 tools.activate()  # managed ~/.tonkre/tools (jadx, apktool, JDK, SDK) onto PATH for every subprocess
 
@@ -399,10 +400,46 @@ _URL_NOISE = ("schemas.android.com", "www.w3.org", "apache.org/licenses", "xmlpu
 # Data producers — return structured dicts so both the MCP/CLI scanners and the audit
 # report build on one implementation (the scanners add their own JSON/text formatting).
 
+def _shannon_entropy(s: str) -> float:
+    """Shannon entropy (bits/char) — high for random keys, low for words/placeholders."""
+    if not s:
+        return 0.0
+    from math import log2
+    n = len(s)
+    counts = {c: s.count(c) for c in set(s)}
+    return -sum((k / n) * log2(k / n) for k in counts.values())
+
+
+# The quoted value in a `key = "value"` generic_secret match; used to drop low-entropy noise.
+_QUOTED_RE = re.compile(r"[\"']([^\"']{6,})[\"']\s*$")
+_PLACEHOLDERS = ("your_", "example", "placeholder", "changeme", "xxxx", "<", "test_key", "dummy")
+
+
+def _secret_value(hit: str) -> str:
+    """Extract the candidate secret value from a 'path:line:text' grep hit."""
+    m = _QUOTED_RE.search(hit)
+    return m.group(1) if m else hit.split(":", 2)[-1].strip()
+
+
+def _looks_random(hit: str, min_entropy: float = 3.0) -> bool:
+    """True if a generic_secret hit's value is high-entropy enough to plausibly be a real
+    key. Filters obvious placeholders ('your_api_key', 'xxxxxxxx') that match the loose
+    generic pattern but aren't credentials."""
+    val = _secret_value(hit)
+    if any(w in val.lower() for w in _PLACEHOLDERS):
+        return False
+    return _shannon_entropy(val) >= min_entropy
+
+
 def _secrets_data(proj: Path, max_per_type: int = 30) -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for name, pat in SECRET_PATTERNS.items():
         hits = _grep(proj, pat, ["!*.so", "!*.dex", "!*.png", "!*.jpg", "!*.webp"], max_per_type)
+        if name == "generic_secret":
+            # the generic key/secret/password pattern is loose — keep only high-entropy
+            # values, ranked most-random-first, to cut placeholder noise.
+            hits = sorted((h for h in hits if _looks_random(h)),
+                          key=lambda h: -_shannon_entropy(_secret_value(h)))
         if hits:
             out[name] = hits
     return out
@@ -453,6 +490,29 @@ def find_crypto_and_security(project: str) -> str:
     WebView JS bridges, dynamic code loading, root/emulator/Frida detection, SSL pinning, SQL."""
     out = _security_data(_project_dir(project))
     return _truncate(json.dumps(out, indent=2)) if out else "No matches."
+
+
+def _api_data(proj: Path, max_per_cap: int = 25) -> dict[str, list[str]]:
+    """Grep each capability's signal patterns over Java sources. Returns capability -> hits."""
+    src = proj / "jadx" / "sources"
+    found: dict[str, list[str]] = {}
+    for cap, patterns in apis.catalog_patterns().items():
+        hits = _grep(src, "|".join(patterns), ["*.java"], max_per_cap)
+        if hits:
+            found[cap] = hits
+    return found
+
+
+@mcp.tool()
+def find_api_usage(project: str) -> str:
+    """Catalog which sensitive Android APIs the app calls (location, device IDs, SMS, camera,
+    microphone, clipboard, crypto, reflection, process exec, dynamic loading, root checks, …),
+    grouped by capability, and cross-reference them with the declared permissions: flags APIs
+    used without a matching permission and permissions declared but never used. Static leads —
+    confirm each in context."""
+    proj = _project_dir(project)
+    result = apis.cross_reference(_api_data(proj), info(project).get("permissions", []))
+    return _truncate(apis.format_report(result))
 
 
 @mcp.tool()
@@ -557,6 +617,23 @@ def _class_set(proj: Path) -> set[str]:
         if src.exists() else set()
 
 
+# A method declaration in jadx Java output: optional modifiers, a return type, a name, params,
+# then an opening brace. Excludes control keywords, which also precede a '('.
+_METHOD_RE = re.compile(
+    r"(?m)^[ \t]*(?:(?:public|private|protected|static|final|synchronized|native|abstract|"
+    r"default|strictfp)[ \t]+)+[\w$<>,.\[\] ]+?[ \t]+([A-Za-z_$][\w$]*)[ \t]*\(([^;{)]*)\)[ \t]*"
+    r"(?:throws[\w$.,\s]+)?\{")
+
+
+def _java_methods(text: str) -> set[str]:
+    """Approximate set of method signatures ('name(arity)') declared in a Java source."""
+    out = set()
+    for name, params in _METHOD_RE.findall(text):
+        arity = 0 if not params.strip() else params.count(",") + 1
+        out.add(f"{name}({arity})")
+    return out
+
+
 def diff_versions(project_a: str, project_b: str, max_items: int = 400) -> dict:
     """Compare two decompiled projects: manifest, permissions, components, classes, URLs."""
     pa, pb = _project_dir(project_a), _project_dir(project_b)
@@ -565,16 +642,31 @@ def diff_versions(project_a: str, project_b: str, max_items: int = 400) -> dict:
     def addrm(a: set, b: set):
         return {"added": sorted(b - a)[:max_items], "removed": sorted(a - b)[:max_items]}
 
-    # changed classes: present in both, different source hash
+    # changed classes: present in both, different source hash. For the first N changed
+    # classes, also diff their method signatures (added/removed) for a finer-grained view.
     ca, cb = _class_set(pa), _class_set(pb)
     changed = []
+    method_changes: dict[str, dict] = {}
     srca, srcb = pa / "jadx" / "sources", pb / "jadx" / "sources"
     for cls in sorted(ca & cb):
         rel = cls.replace(".", "/") + ".java"
         fa, fb = srca / rel, srcb / rel
         try:
-            if fa.read_bytes() != fb.read_bytes():
-                changed.append(cls)
+            ba, bb = fa.read_bytes(), fb.read_bytes()
+            if ba == bb:
+                continue
+            changed.append(cls)
+            if len(method_changes) < 60:  # bound the (more expensive) method diff
+                ma = _java_methods(ba.decode(errors="ignore"))
+                mb = _java_methods(bb.decode(errors="ignore"))
+                if ma != mb:
+                    md = {}
+                    if mb - ma:
+                        md["added"] = sorted(mb - ma)
+                    if ma - mb:
+                        md["removed"] = sorted(ma - mb)
+                    if md:
+                        method_changes[cls] = md
         except OSError:
             pass
         if len(changed) >= max_items:
@@ -592,7 +684,8 @@ def diff_versions(project_a: str, project_b: str, max_items: int = 400) -> dict:
         "permissions": addrm(set(ia["permissions"]), set(ib["permissions"])),
         "exported_components": addrm(exp(ia), exp(ib)),
         "frameworks": addrm(set(ia.get("frameworks", [])), set(ib.get("frameworks", []))),
-        "classes": addrm(ca, cb) | {"changed": changed, "changed_count": len(changed)},
+        "classes": addrm(ca, cb) | {"changed": changed, "changed_count": len(changed),
+                                    "method_changes": method_changes},
         "urls": addrm(ua, ub),
         "flag_changes": {k: [ia["application"].get(k), ib["application"].get(k)]
                          for k in ("debuggable", "allowBackup", "usesCleartextTraffic", "networkSecurityConfig")
@@ -875,13 +968,52 @@ def export_report(project: str) -> str:
 
 # ---------- CLI ----------
 
+def selftest() -> bool:
+    """Fast, offline sanity checks of the pure engines (no decompiled project needed).
+    Run with `tonkre selftest`; CI can gate on its exit code."""
+    checks: list[tuple[str, bool]] = []
+
+    def ok(name, cond):
+        checks.append((name, bool(cond)))
+
+    # entropy: random-looking value scores higher than a dictionary word
+    ok("entropy ranks random > word", _shannon_entropy("aZ9x2Qp7Lk3Rt8Wm") > _shannon_entropy("password"))
+    ok("placeholder filtered", not _looks_random('x.java:1:api_key = "your_api_key_here"'))
+    ok("real key kept", _looks_random('x.java:1:key = "aZ9x2Qp7Lk3Rt8WmQ1"'))
+
+    # java method extraction
+    methods = _java_methods("public int foo(int a, String b) {\n}\n    private void bar() {}\n")
+    ok("method extract foo/bar", methods == {"foo(2)", "bar(0)"})
+    ok("method extract ignores keywords", "if(1)" not in _java_methods("if (x > 0) {\n}"))
+
+    # api cross-reference
+    xr = apis.cross_reference({"camera": ["x.java:1:CameraManager"]},
+                              ["android.permission.INTERNET"])
+    ok("api used-not-declared flagged", xr["summary"]["used_not_declared"] == 1)
+    xr2 = apis.cross_reference({}, ["android.permission.CAMERA"])
+    ok("api declared-but-unused flagged", xr2["summary"]["declared_but_unused"] == 1)
+
+    # report renders for an empty project without raising
+    try:
+        report.build_markdown({"project": "t", "info": {}})
+        ok("report renders empty", True)
+    except Exception:
+        ok("report renders empty", False)
+
+    passed = sum(1 for _, c in checks if c)
+    for name, c in checks:
+        print(f"  {'PASS' if c else 'FAIL'}  {name}")
+    print(f"{passed}/{len(checks)} checks passed")
+    return passed == len(checks)
+
+
 def cli(argv: list[str]) -> None:
     usage = ("usage: tonkre <decompile APK [--force] [--deobf] | info PROJECT | projects | "
              "search PROJECT REGEX [scope] | secrets PROJECT | urls PROJECT | security PROJECT | "
              "intents PROJECT | diff PROJECT_A PROJECT_B | frida PROJECT [CLASS] [METHOD] [TEMPLATE] | "
              "smali PROJECT CLASS | native PROJECT SO_PATH | mitm PROJECT | "
              "patch PROJECT CLASS METHOD [force_true|force_false|return_zero|return_null|noop] | "
-             "report PROJECT | "
+             "report PROJECT | apis PROJECT | selftest | "
              "setup [status|all|COMPONENT...] [--accept-android-license]>")
     if not argv:
         sys.exit(usage)
@@ -921,6 +1053,10 @@ def cli(argv: list[str]) -> None:
         print(patch_method(rest[0], rest[1], rest[2], rest[3] if len(rest) > 3 else "force_true"))
     elif cmd == "report" and rest:
         print(export_report(rest[0]))
+    elif cmd == "apis" and rest:
+        print(find_api_usage(rest[0]))
+    elif cmd == "selftest":
+        sys.exit(0 if selftest() else 1)
     else:
         sys.exit(usage)
 
