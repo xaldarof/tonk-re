@@ -24,6 +24,7 @@ Contributions welcome; open an issue to claim one.
 - **Method-level version diff** — the version diff now lists added/removed method signatures per changed class, not just the changed-class list.
 - **Secret entropy filtering** — the loose `generic_secret` pattern is filtered by Shannon entropy and placeholder words, and ranked most-random-first, to cut false positives.
 - **Engine self-test** — `tonkre selftest` runs offline sanity checks of the pure engines; `tests/` holds stdlib `unittest` coverage runnable with no install.
+- **Multi-APK projects** — attach several APKs (a base + its split/feature APKs, or successive versions) to one project and analyse them in a shared context. Each member keeps its own decompiled sources, resources and metadata (`attached/<member>/`), the first APK stays primary, and the layout is backward compatible (a single-APK project is a one-member container with no `project.json`). `attach_apk` / `tonkre attach` / `[ + ATTACH APK ]`; the scanners (`apk_info`/`find_secrets`/`find_urls`/`find_crypto_and_security`/`find_api_usage`/`export_report`) cover every member, and the read/search tools take an optional `apk=` to target one (engine: `projects.py`).
 - Built-in Claude assistant (conversation memory, editable pre-prompt, orange tree-flash on file reads)
 - Missing-tool handling + setup banner, apktool version warning + updater
 - Cross-platform (macOS/Windows/Linux), native macOS Dock app, MCP server for Claude Code

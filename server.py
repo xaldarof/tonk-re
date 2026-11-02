@@ -33,6 +33,7 @@ import native  # noqa: E402  (pure-stdlib ELF/.so analysis)
 import patches  # noqa: E402  (manifest + smali patch engine)
 import report  # noqa: E402  (Markdown audit-report renderer)
 import apis  # noqa: E402  (sensitive-API usage catalog + permission cross-reference)
+import projects  # noqa: E402  (multi-APK project container model)
 
 tools.activate()  # managed ~/.tonkre/tools (jadx, apktool, JDK, SDK) onto PATH for every subprocess
 
@@ -74,6 +75,45 @@ def _safe_join(root: Path, rel: str) -> Path:
     return p
 
 
+# ---------- project members (multi-APK containers) ----------
+# A project is either a legacy single-APK dir (no project.json) or a container of
+# members. The PRIMARY member always lives at the container root (dir == "."), so a
+# legacy project is just a one-member container and every tool that resolves the root
+# keeps targeting the primary APK unchanged. See projects.py for the layout.
+
+def _members(project: str) -> list[dict]:
+    """All members of a project, each as a dict with a resolved absolute `path`.
+
+    Legacy single-APK project -> one synthesized member at the root. Container ->
+    the project.json members, primary first. `path` is the member's decompiled tree."""
+    proj = _project_dir(project)
+    mf = proj / projects.MANIFEST
+    if mf.exists():
+        doc = projects.load(mf.read_text(encoding="utf-8"))
+        out = []
+        for m in doc["members"]:
+            path = proj if m["dir"] in (".", "") else _safe_join(proj, m["dir"])
+            out.append({**m, "path": path, "primary": projects.is_primary(doc, m["name"])})
+        out.sort(key=lambda m: not m["primary"])  # primary first
+        return out
+    meta = json.loads((proj / "meta.json").read_text(encoding="utf-8")) if (proj / "meta.json").exists() else {}
+    return [{"name": project, "dir": ".", "path": proj, "apk": meta.get("apk"),
+             "sha256": meta.get("sha256"),
+             "label": Path(meta.get("apk", "")).stem or project, "primary": True}]
+
+
+def _member_dir(project: str, apk: str = "") -> Path:
+    """Decompiled-tree directory for one member. `apk` selects by member name or label;
+    empty -> the primary member (the container root), so legacy callers are unchanged."""
+    if not apk:
+        return _project_dir(project)
+    for m in _members(project):
+        if apk in (m["name"], m["label"]):
+            return m["path"]
+    names = [m["name"] for m in _members(project)]
+    raise ValueError(f"No APK '{apk}' in project '{project}'. Members: {names}")
+
+
 def _run(cmd: list[str], timeout: int = 1800) -> tuple[int, str]:
     cmd = [shutil.which(cmd[0]) or cmd[0], *cmd[1:]]  # Windows needs jadx.bat / apktool.bat resolved
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace")
@@ -93,20 +133,14 @@ def _a(el, name: str):
 
 # ---------- core ----------
 
-def decompile(apk_path: str, force: bool = False, deobf: bool = False) -> dict:
-    apk = Path(apk_path).expanduser().resolve()
-    if not apk.is_file():
-        raise FileNotFoundError(apk)
-    digest = _sha256(apk)
-    name = f"{re.sub(r'[^A-Za-z0-9_.-]', '_', apk.stem)}-{digest[:10]}"
-    proj = WORKSPACE / name
-    meta_file = proj / "meta.json"
-    if meta_file.exists() and not force:
-        return json.loads(meta_file.read_text(encoding="utf-8")) | {"cached": True}
+def _decompile_into(apk: Path, dest: Path, name: str, digest: str, deobf: bool) -> dict:
+    """Run jadx + apktool for one APK into a fresh `dest` tree and return its meta dict.
 
-    if proj.exists():
-        shutil.rmtree(proj)
-    proj.mkdir(parents=True)
+    Shared by a standalone project and an attached member — the only difference is where
+    `dest` lives. `dest` is (re)created here; the caller owns naming and manifest wiring."""
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
     log = {}
 
     # Handle split bundles (.xapk/.apks/.apkm): extract and decompile base.apk
@@ -117,38 +151,84 @@ def decompile(apk_path: str, force: bool = False, deobf: bool = False) -> dict:
             base = next((n for n in apks if n in ("base.apk",) or "base" in n), apks[0] if apks else None)
             if not base:
                 raise ValueError("No base APK found inside bundle")
-            (proj / "splits").mkdir()
+            (dest / "splits").mkdir()
             for n in apks:
-                (proj / "splits" / n).write_bytes(z.read(n))
-            target = proj / "splits" / base
+                (dest / "splits" / n).write_bytes(z.read(n))
+            target = dest / "splits" / base
 
-    jadx_cmd = ["jadx", "-d", str(proj / "jadx"), "--show-bad-code", "-j", str(os.cpu_count() or 4)]
+    jadx_cmd = ["jadx", "-d", str(dest / "jadx"), "--show-bad-code", "-j", str(os.cpu_count() or 4)]
     if deobf:
         jadx_cmd.append("--deobf")
     rc, out = _run(jadx_cmd + [str(target)])
     log["jadx"] = {"rc": rc, "tail": out[-1500:]}
 
-    rc, out = _run(["apktool", "d", "-f", "-o", str(proj / "apktool"), str(target)])
+    rc, out = _run(["apktool", "d", "-f", "-o", str(dest / "apktool"), str(target)])
     log["apktool"] = {"rc": rc, "tail": out[-1500:]}
 
     meta = {
         "project": name,
         "apk": str(apk),
         "sha256": digest,
-        "dirs": {"java": str(proj / "jadx" / "sources"), "resources": str(proj / "apktool"),
-                 "smali": str(proj / "apktool")},
+        "dirs": {"java": str(dest / "jadx" / "sources"), "resources": str(dest / "apktool"),
+                 "smali": str(dest / "apktool")},
         "log": log,
     }
     try:
-        meta["info"] = info(name, _meta_override=meta)
+        meta["info"] = _info_at(dest)
     except Exception as e:  # manifest decode failures shouldn't kill the run
         meta["info_error"] = str(e)
-    meta_file.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    return meta | {"cached": False}
+    (dest / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return meta
 
 
-def info(project: str, _meta_override: dict | None = None) -> dict:
-    proj = WORKSPACE / project if _meta_override else _project_dir(project)
+def decompile(apk_path: str, force: bool = False, deobf: bool = False,
+              attach_to: str | None = None) -> dict:
+    """Decompile an APK. With `attach_to`, decompile it as an extra member of that existing
+    project (a shared multi-APK context) instead of a standalone project."""
+    apk = Path(apk_path).expanduser().resolve()
+    if not apk.is_file():
+        raise FileNotFoundError(apk)
+    digest = _sha256(apk)
+    name = f"{re.sub(r'[^A-Za-z0-9_.-]', '_', apk.stem)}-{digest[:10]}"
+
+    if attach_to:
+        return _attach(attach_to, apk, name, digest, force, deobf)
+
+    proj = WORKSPACE / name
+    meta_file = proj / "meta.json"
+    if meta_file.exists() and not force:
+        return json.loads(meta_file.read_text(encoding="utf-8")) | {"cached": True}
+    return _decompile_into(apk, proj, name, digest, deobf) | {"cached": False}
+
+
+def _attach(project: str, apk: Path, name: str, digest: str, force: bool, deobf: bool) -> dict:
+    """Decompile `apk` as a new member of an existing project, promoting a legacy single-APK
+    project into a container (project.json) on the first attach. Primary member stays at root."""
+    container = _project_dir(project)
+    mf = container / projects.MANIFEST
+    if mf.exists():
+        doc = projects.load(mf.read_text(encoding="utf-8"))
+    else:  # promote: the existing single APK becomes the primary member (dir ".")
+        legacy = json.loads((container / "meta.json").read_text(encoding="utf-8"))
+        doc = projects.new_doc(project)
+        projects.add_member(doc, project, ".", legacy.get("apk"), legacy.get("sha256"),
+                            Path(legacy.get("apk", "")).stem or project)
+
+    rel = projects.member_dirname(name)
+    dest = _safe_join(container, rel)
+    member_meta = dest / "meta.json"
+    if member_meta.exists() and not force:
+        return json.loads(member_meta.read_text(encoding="utf-8")) | {
+            "project": project, "member": name, "attached": True, "cached": True}
+
+    meta = _decompile_into(apk, dest, name, digest, deobf)
+    projects.add_member(doc, name, rel, str(apk), digest, apk.stem)
+    mf.write_text(projects.dumps(doc), encoding="utf-8")
+    return meta | {"project": project, "member": name, "attached": True, "cached": False}
+
+
+def _info_at(proj: Path) -> dict:
+    """Manifest attack-surface summary for one decompiled tree (member dir)."""
     root = _manifest_root(proj)
     yml = proj / "apktool" / "apktool.yml"
     sdk = {}
@@ -195,6 +275,11 @@ def info(project: str, _meta_override: dict | None = None) -> dict:
         "native_libs": native,
         "frameworks": _detect_frameworks(proj),
     }
+
+
+def info(project: str, apk: str = "") -> dict:
+    """Manifest summary for one member (default: the primary APK)."""
+    return _info_at(_member_dir(project, apk))
 
 
 def _detect_frameworks(proj: Path) -> list[str]:
@@ -279,34 +364,68 @@ def decompile_apk(apk_path: str, force: bool = False, deobfuscate: bool = False)
 
 
 @mcp.tool()
+def attach_apk(project: str, apk_path: str, force: bool = False, deobfuscate: bool = False) -> str:
+    """Attach another APK to an existing project as an extra member, so several related APKs
+    (a base + its split/feature APKs, or successive versions) are analysed together in one shared
+    context. Each member keeps its own decompiled sources, resources and metadata; the first APK
+    stays the primary. The scanners (apk_info/find_secrets/find_urls/find_crypto_and_security/
+    find_api_usage/export_report) then cover every member, and the read/search tools take an
+    optional `apk=` (member name or label) to target one."""
+    return _truncate(json.dumps(decompile(apk_path, force, deobfuscate, attach_to=project), indent=2))
+
+
+@mcp.tool()
 def list_projects() -> str:
-    """List previously decompiled APK projects."""
+    """List previously decompiled APK projects (with their attached APK members, if any)."""
     if not WORKSPACE.exists():
         return "[]"
     out = []
     for m in sorted(WORKSPACE.glob("*/meta.json")):
+        if m.parent.parent.name == projects.ATTACHED:
+            continue  # a member's own meta.json; listed under its container below
         d = json.loads(m.read_text(encoding="utf-8"))
-        out.append({"project": d["project"], "apk": d["apk"], "package": d.get("info", {}).get("package")})
+        row = {"project": d["project"], "apk": d["apk"], "package": d.get("info", {}).get("package")}
+        members = _members(d["project"])
+        if len(members) > 1:
+            row["members"] = [{"name": x["name"], "label": x["label"],
+                               "primary": x["primary"], "package": _package_of(x["path"])}
+                              for x in members]
+        out.append(row)
     return json.dumps(out, indent=2)
 
 
+def _package_of(member_dir: Path) -> str | None:
+    meta = member_dir / "meta.json"
+    if meta.exists():
+        return json.loads(meta.read_text(encoding="utf-8")).get("info", {}).get("package")
+    return None
+
+
 @mcp.tool()
-def apk_info(project: str) -> str:
+def apk_info(project: str, apk: str = "") -> str:
     """Manifest-level attack surface summary: permissions, exported components with intent
-    actions/deep-link schemes, debuggable/allowBackup/cleartext flags, native libs, frameworks."""
-    return _truncate(json.dumps(info(project), indent=2))
+    actions/deep-link schemes, debuggable/allowBackup/cleartext flags, native libs, frameworks.
+    Covers every attached APK member; pass `apk=` (member name/label) to show just one."""
+    members = _members(project)
+    if apk or len(members) == 1:
+        return _truncate(json.dumps(info(project, apk), indent=2))
+    out = {"project": project, "members": [
+        {"member": m["name"], "label": m["label"], "primary": m["primary"],
+         "apk": m["apk"], "info": _info_at(m["path"])} for m in members]}
+    return _truncate(json.dumps(out, indent=2))
 
 
 @mcp.tool()
-def read_manifest(project: str) -> str:
-    """Return the decoded AndroidManifest.xml."""
-    return _truncate((_project_dir(project) / "apktool" / "AndroidManifest.xml").read_text(encoding="utf-8", errors="ignore"))
+def read_manifest(project: str, apk: str = "") -> str:
+    """Return the decoded AndroidManifest.xml (of the primary APK, or member `apk=`)."""
+    return _truncate((_member_dir(project, apk) / "apktool" / "AndroidManifest.xml").read_text(encoding="utf-8", errors="ignore"))
 
 
 @mcp.tool()
-def list_classes(project: str, package_prefix: str = "", limit: int = 500) -> str:
-    """List decompiled Java classes, optionally filtered by package prefix (e.g. 'com.example.net')."""
-    src = _project_dir(project) / "jadx" / "sources"
+def list_classes(project: str, package_prefix: str = "", limit: int = 500, apk: str = "") -> str:
+    """List decompiled Java classes, optionally filtered by package prefix (e.g. 'com.example.net').
+    `apk=` selects an attached member (default: the primary APK)."""
+    src = _member_dir(project, apk) / "jadx" / "sources"
     prefix = package_prefix.replace(".", "/")
     classes = []
     for p in src.rglob("*.java"):
@@ -319,9 +438,10 @@ def list_classes(project: str, package_prefix: str = "", limit: int = 500) -> st
 
 
 @mcp.tool()
-def package_tree(project: str, depth: int = 3) -> str:
-    """Show the package hierarchy with class counts, to orient in a large app."""
-    src = _project_dir(project) / "jadx" / "sources"
+def package_tree(project: str, depth: int = 3, apk: str = "") -> str:
+    """Show the package hierarchy with class counts, to orient in a large app.
+    `apk=` selects an attached member (default: the primary APK)."""
+    src = _member_dir(project, apk) / "jadx" / "sources"
     counts: dict[str, int] = {}
     for p in src.rglob("*.java"):
         parts = p.relative_to(src).parts[:-1][:depth]
@@ -331,10 +451,10 @@ def package_tree(project: str, depth: int = 3) -> str:
 
 
 @mcp.tool()
-def read_class(project: str, class_name: str, start_line: int = 1, max_lines: int = 800) -> str:
+def read_class(project: str, class_name: str, start_line: int = 1, max_lines: int = 800, apk: str = "") -> str:
     """Read decompiled Java source for a class (fully-qualified, e.g. com.example.MainActivity).
-    Inner classes resolve to their outer file."""
-    src = _project_dir(project) / "jadx" / "sources"
+    Inner classes resolve to their outer file. `apk=` selects an attached member (default: primary)."""
+    src = _member_dir(project, apk) / "jadx" / "sources"
     rel = class_name.split("$")[0].replace(".", "/") + ".java"
     f = _safe_join(src, rel)
     if not f.exists():
@@ -346,10 +466,11 @@ def read_class(project: str, class_name: str, start_line: int = 1, max_lines: in
 
 
 @mcp.tool()
-def read_file(project: str, path: str, start_line: int = 1, max_lines: int = 800) -> str:
+def read_file(project: str, path: str, start_line: int = 1, max_lines: int = 800, apk: str = "") -> str:
     """Read any file in the project by relative path, e.g. 'apktool/res/values/strings.xml',
-    'apktool/smali/com/x/Y.smali', 'jadx/sources/com/x/Y.java'."""
-    f = _safe_join(_project_dir(project), path)
+    'apktool/smali/com/x/Y.smali', 'jadx/sources/com/x/Y.java'. `apk=` selects an attached
+    member (default: the primary APK)."""
+    f = _safe_join(_member_dir(project, apk), path)
     if not f.is_file():
         return f"Not a file: {path}"
     data = f.read_bytes()
@@ -362,10 +483,11 @@ def read_file(project: str, path: str, start_line: int = 1, max_lines: int = 800
 
 @mcp.tool()
 def search_code(project: str, pattern: str, scope: str = "java", ignore_case: bool = False,
-                max_hits: int = 200) -> str:
+                max_hits: int = 200, apk: str = "") -> str:
     """Regex search across the decompiled app. scope: 'java' (jadx sources), 'smali',
-    'resources' (res/ + assets/ + manifest), or 'all'."""
-    proj = _project_dir(project)
+    'resources' (res/ + assets/ + manifest), or 'all'. `apk=` selects an attached member
+    (default: the primary APK)."""
+    proj = _member_dir(project, apk)
     scopes = {
         "java": (proj / "jadx" / "sources", ["*.java"]),
         "smali": (proj / "apktool", ["*.smali"]),
@@ -468,28 +590,55 @@ def _security_data(proj: Path) -> dict[str, list[str]]:
     return out
 
 
+# A project's members to scan: the one selected by `apk`, else every member. Aggregate
+# scanners iterate this so a multi-APK project is analysed as one shared context, while a
+# single-APK project yields exactly one member and its original (unwrapped) output.
+def _members_for(project: str, apk: str) -> list[dict]:
+    if apk:
+        return [{"name": apk, "label": apk, "path": _member_dir(project, apk), "primary": False}]
+    return _members(project)
+
+
 @mcp.tool()
-def find_secrets(project: str, max_per_type: int = 30) -> str:
+def find_secrets(project: str, max_per_type: int = 30, apk: str = "") -> str:
     """Scan sources, resources and assets for hard-coded credentials (Google/AWS/Stripe/GitHub/
-    Slack keys, JWTs, private keys, generic api_key/secret/password assignments)."""
-    out = _secrets_data(_project_dir(project), max_per_type)
-    return _truncate(json.dumps(out, indent=2)) if out else "No secret patterns matched."
+    Slack keys, JWTs, private keys, generic api_key/secret/password assignments). Covers every
+    attached APK member (results keyed by member); pass `apk=` to scan just one."""
+    members = _members_for(project, apk)
+    if len(members) == 1:
+        out = _secrets_data(members[0]["path"], max_per_type)
+        return _truncate(json.dumps(out, indent=2)) if out else "No secret patterns matched."
+    combined = {m["label"]: d for m in members if (d := _secrets_data(m["path"], max_per_type))}
+    return _truncate(json.dumps(combined, indent=2)) if combined else "No secret patterns matched."
 
 
 @mcp.tool()
-def find_urls(project: str, max_hits: int = 400) -> str:
-    """Extract unique URLs/endpoints from code and resources (filters common schema/namespace noise)."""
-    urls = _urls_data(_project_dir(project))
-    lines = [f"{u}    <- {src}" for u, src in sorted(urls.items())][:max_hits]
-    return _truncate(f"{len(urls)} unique URLs\n" + "\n".join(lines))
+def find_urls(project: str, max_hits: int = 400, apk: str = "") -> str:
+    """Extract unique URLs/endpoints from code and resources (filters common schema/namespace
+    noise). Covers every attached APK member; pass `apk=` to scan just one."""
+    members = _members_for(project, apk)
+
+    def render(urls: dict[str, str]) -> str:
+        lines = [f"{u}    <- {src}" for u, src in sorted(urls.items())][:max_hits]
+        return f"{len(urls)} unique URLs\n" + "\n".join(lines)
+
+    if len(members) == 1:
+        return _truncate(render(_urls_data(members[0]["path"])))
+    blocks = [f"### {m['label']}\n{render(_urls_data(m['path']))}" for m in members]
+    return _truncate("\n\n".join(blocks))
 
 
 @mcp.tool()
-def find_crypto_and_security(project: str) -> str:
+def find_crypto_and_security(project: str, apk: str = "") -> str:
     """Locate security-relevant API usage: crypto (Cipher/ECB/static IVs), TLS trust overrides,
-    WebView JS bridges, dynamic code loading, root/emulator/Frida detection, SSL pinning, SQL."""
-    out = _security_data(_project_dir(project))
-    return _truncate(json.dumps(out, indent=2)) if out else "No matches."
+    WebView JS bridges, dynamic code loading, root/emulator/Frida detection, SSL pinning, SQL.
+    Covers every attached APK member (results keyed by member); pass `apk=` to scan just one."""
+    members = _members_for(project, apk)
+    if len(members) == 1:
+        out = _security_data(members[0]["path"])
+        return _truncate(json.dumps(out, indent=2)) if out else "No matches."
+    combined = {m["label"]: d for m in members if (d := _security_data(m["path"]))}
+    return _truncate(json.dumps(combined, indent=2)) if combined else "No matches."
 
 
 def _api_data(proj: Path, max_per_cap: int = 25) -> dict[str, list[str]]:
@@ -503,32 +652,43 @@ def _api_data(proj: Path, max_per_cap: int = 25) -> dict[str, list[str]]:
     return found
 
 
+def _api_report_for(member_dir: Path) -> str:
+    result = apis.cross_reference(_api_data(member_dir),
+                                  _info_at(member_dir).get("permissions", []))
+    return apis.format_report(result)
+
+
 @mcp.tool()
-def find_api_usage(project: str) -> str:
+def find_api_usage(project: str, apk: str = "") -> str:
     """Catalog which sensitive Android APIs the app calls (location, device IDs, SMS, camera,
     microphone, clipboard, crypto, reflection, process exec, dynamic loading, root checks, …),
     grouped by capability, and cross-reference them with the declared permissions: flags APIs
     used without a matching permission and permissions declared but never used. Static leads —
-    confirm each in context."""
-    proj = _project_dir(project)
-    result = apis.cross_reference(_api_data(proj), info(project).get("permissions", []))
-    return _truncate(apis.format_report(result))
+    confirm each in context. Covers every attached APK member; pass `apk=` to scan just one."""
+    members = _members_for(project, apk)
+    if len(members) == 1:
+        return _truncate(_api_report_for(members[0]["path"]))
+    blocks = [f"### {m['label']}\n{_api_report_for(m['path'])}" for m in members]
+    return _truncate("\n\n".join(blocks))
 
 
 @mcp.tool()
-def xrefs(project: str, symbol: str, max_hits: int = 150) -> str:
-    """Find references to a class/method/field name in Java sources (word-boundary match)."""
-    hits = _grep(_project_dir(project) / "jadx" / "sources", rf"\b{re.escape(symbol)}\b", ["*.java"], max_hits)
+def xrefs(project: str, symbol: str, max_hits: int = 150, apk: str = "") -> str:
+    """Find references to a class/method/field name in Java sources (word-boundary match).
+    `apk=` selects an attached member (default: the primary APK)."""
+    hits = _grep(_member_dir(project, apk) / "jadx" / "sources", rf"\b{re.escape(symbol)}\b", ["*.java"], max_hits)
     return _truncate(f"{len(hits)} refs\n" + "\n".join(hits)) if hits else "No references."
 
 
 @mcp.tool()
-def signing_info(project: str) -> str:
-    """Show the APK signing certificate (subject, issuer, validity, fingerprints) via keytool."""
-    apk = json.loads((_project_dir(project) / "meta.json").read_text(encoding="utf-8"))["apk"]
+def signing_info(project: str, apk: str = "") -> str:
+    """Show the APK signing certificate (subject, issuer, validity, fingerprints) via keytool.
+    `apk=` selects an attached member (default: the primary APK)."""
+    member = _member_dir(project, apk)
+    apk_path = json.loads((member / "meta.json").read_text(encoding="utf-8"))["apk"]
     if not shutil.which("keytool"):
         return "keytool not found (ships with the JDK)."
-    _, out = _run(["keytool", "-printcert", "-jarfile", apk], timeout=60)
+    _, out = _run(["keytool", "-printcert", "-jarfile", apk_path], timeout=60)
     return out
 
 
@@ -925,44 +1085,54 @@ def patch_method(project: str, class_name: str, method: str, action: str = "forc
 
 # ---------- audit report ----------
 
-def build_report_data(project: str) -> dict:
-    """Gather every analysis the report needs into one structured dict (reuses the scanners)."""
-    proj = _project_dir(project)
-    meta = json.loads((proj / "meta.json").read_text(encoding="utf-8"))
+def build_report_data(project: str, apk: str = "") -> dict:
+    """Gather every analysis the report needs for one member into one structured dict."""
+    member = _member_dir(project, apk)
+    meta = json.loads((member / "meta.json").read_text(encoding="utf-8"))
     data = {
-        "project": project,
+        "project": meta.get("project", project),
         "apk": meta.get("apk"),
         "sha256": meta.get("sha256"),
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "info": info(project),
-        "secrets": _secrets_data(proj),
-        "urls": _urls_data(proj),
-        "security": _security_data(proj),
+        "info": _info_at(member),
+        "secrets": _secrets_data(member),
+        "urls": _urls_data(member),
+        "security": _security_data(member),
     }
     try:
-        data["signing"] = signing_info(project)
+        data["signing"] = signing_info(project, apk)
     except Exception:  # keytool/APK issues shouldn't sink the whole report
         data["signing"] = None
     return data
 
 
 def write_report(project: str) -> dict:
-    """Render AUDIT.md into the project directory. Returns a summary of what it contains."""
-    data = build_report_data(project)
-    md = report.build_markdown(data)
+    """Render AUDIT.md into the project directory. Returns a summary of what it contains.
+    A multi-APK project gets one report covering every member, concatenated into AUDIT.md."""
+    members = _members(project)
+    datas = [build_report_data(project, m["name"] if not m["primary"] else "") for m in members]
+    if len(members) == 1:
+        md = report.build_markdown(datas[0])
+    else:
+        md = ("# Security audit — multi-APK project\n\n"
+              + "\n".join(f"- `{m['label']}`{' (primary)' if m['primary'] else ''}" for m in members)
+              + "\n\n" + "\n\n---\n\n".join(
+                  f"# APK: {m['label']}\n\n{report.build_markdown(d)}"
+                  for m, d in zip(members, datas)))
     out = _project_dir(project) / "AUDIT.md"
     out.write_text(md, encoding="utf-8")
-    return {"path": "AUDIT.md", "bytes": len(md.encode("utf-8")),
-            "secret_types": len(data["secrets"]), "urls": len(data["urls"]),
-            "security_groups": len(data["security"])}
+    return {"path": "AUDIT.md", "bytes": len(md.encode("utf-8")), "apks": len(members),
+            "secret_types": sum(len(d["secrets"]) for d in datas),
+            "urls": sum(len(d["urls"]) for d in datas),
+            "security_groups": sum(len(d["security"]) for d in datas)}
 
 
 @mcp.tool()
 def export_report(project: str) -> str:
     """Write a Markdown security-audit report (AUDIT.md) into the project, consolidating the
     manifest attack surface, hard-coded secrets, endpoints, crypto/security findings and the
-    signing certificate with file:line evidence. Returns the path and a summary. Regex hits are
-    leads — verify each in context before relying on them."""
+    signing certificate with file:line evidence. Covers every attached APK member. Returns the
+    path and a summary. Regex hits are leads — verify each in context before relying on them."""
     return _truncate(json.dumps(write_report(project), indent=2))
 
 
@@ -1000,6 +1170,16 @@ def selftest() -> bool:
     except Exception:
         ok("report renders empty", False)
 
+    # multi-APK container model: promote, register members, resolve primary
+    doc = projects.new_doc("base-aa")
+    projects.add_member(doc, "base-aa", ".", "/x/base.apk", "aa", "base")
+    projects.add_member(doc, "split-bb", projects.member_dirname("split-bb"), "/x/split.apk", "bb", "split")
+    projects.add_member(doc, "base-aa", ".", None, None)  # idempotent on name
+    ok("container registers members once", len(doc["members"]) == 2)
+    ok("container primary resolves", projects.is_primary(doc, "base-aa"))
+    ok("member dir under attached/", projects.member_dirname("split-bb") == "attached/split-bb")
+    ok("project.json round-trips", projects.load(projects.dumps(doc))["members"][1]["label"] == "split")
+
     passed = sum(1 for _, c in checks if c)
     for name, c in checks:
         print(f"  {'PASS' if c else 'FAIL'}  {name}")
@@ -1008,7 +1188,8 @@ def selftest() -> bool:
 
 
 def cli(argv: list[str]) -> None:
-    usage = ("usage: tonkre <decompile APK [--force] [--deobf] | info PROJECT | projects | "
+    usage = ("usage: tonkre <decompile APK [--force] [--deobf] | attach PROJECT APK [--force] [--deobf] | "
+             "info PROJECT | projects | "
              "search PROJECT REGEX [scope] | secrets PROJECT | urls PROJECT | security PROJECT | "
              "intents PROJECT | diff PROJECT_A PROJECT_B | frida PROJECT [CLASS] [METHOD] [TEMPLATE] | "
              "smali PROJECT CLASS | native PROJECT SO_PATH | mitm PROJECT | "
@@ -1022,6 +1203,9 @@ def cli(argv: list[str]) -> None:
         tools.cli(rest)
     elif cmd == "decompile" and rest:
         r = decompile(rest[0], force="--force" in rest, deobf="--deobf" in rest)
+        print(json.dumps(r, indent=2))
+    elif cmd == "attach" and len(rest) >= 2:
+        r = decompile(rest[1], force="--force" in rest, deobf="--deobf" in rest, attach_to=rest[0])
         print(json.dumps(r, indent=2))
     elif cmd == "info" and rest:
         print(apk_info(rest[0]))

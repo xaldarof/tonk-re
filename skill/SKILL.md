@@ -8,7 +8,10 @@ description: Decompile and reverse engineer Android APK/XAPK/APKS files with the
 Tools come from the `tonk-re` MCP server (`mcp__tonk-re__*`).
 
 1. **Decompile**: `decompile_apk(apk_path)` (cached by SHA-256). Keep the returned `project` name.
-   Use `deobfuscate=true` if class names look like `a.b.c`.
+   Use `deobfuscate=true` if class names look like `a.b.c`. To analyse several related APKs
+   together (a base + its split/feature APKs, or successive versions), `attach_apk(project, apk_path)`
+   adds each as a member of one project — the scanners then cover every member, and the read/search
+   tools take an optional `apk=` (member name/label) to target one.
 2. **Orient**: review the manifest summary, then `package_tree` to separate app code from libraries
    (androidx, kotlin, okhttp, com.google are usually noise).
 3. **Attack surface**: `apk_info` → exported components, deep-link schemes, debuggable/allowBackup/

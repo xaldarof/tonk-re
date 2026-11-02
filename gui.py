@@ -268,11 +268,20 @@ def dist_dir(project: str) -> Path:
 def act_decompile(out, body):
     if not require(out, ["jadx", "apktool"]):
         return
-    out("[*] decompiling (jadx + apktool) ... this can take a few minutes\n")
-    r = core.decompile(body["path"], force=body.get("force", False), deobf=body.get("deobf", False))
+    attach_to = body.get("attach_to") or None
+    if attach_to:
+        out(f"[*] attaching to project {attach_to} (jadx + apktool) ... this can take a few minutes\n")
+    else:
+        out("[*] decompiling (jadx + apktool) ... this can take a few minutes\n")
+    r = core.decompile(body["path"], force=body.get("force", False),
+                       deobf=body.get("deobf", False), attach_to=attach_to)
     for k, v in r.get("log", {}).items():
         out(f"--- {k} (rc={v['rc']}) ---\n{v['tail']}\n")
-    out(f"[+] project: {r['project']}{' (cached)' if r.get('cached') else ''}\n")
+    if r.get("attached"):
+        out(f"[+] attached APK '{r.get('member')}' to project: {r['project']}"
+            f"{' (cached)' if r.get('cached') else ''}\n")
+    else:
+        out(f"[+] project: {r['project']}{' (cached)' if r.get('cached') else ''}\n")
     out(f"@@PROJECT {r['project']}\n")
 
 
@@ -605,15 +614,15 @@ class H(BaseHTTPRequestHandler):
                 else:
                     self._json({"content": data.decode(errors="replace")})
             elif u.path == "/api/info":
-                self._json(core.info(p))
+                self._json(core.info(p, q.get("apk", "")))
             elif u.path == "/api/scan":
                 fn = {"secrets": core.find_secrets, "urls": core.find_urls,
                       "security": core.find_crypto_and_security,
                       "apis": core.find_api_usage}[q["kind"]]
-                self._json({"text": fn(p)})
+                self._json({"text": fn(p, apk=q.get("apk", ""))})
             elif u.path == "/api/search":
                 self._json({"text": core.search_code(p, q["q"], q.get("scope", "java"),
-                                                     q.get("i") == "1")})
+                                                     q.get("i") == "1", apk=q.get("apk", ""))})
             elif u.path == "/api/intents":
                 self._json(core.intents(p))
             elif u.path == "/api/counterpart":
