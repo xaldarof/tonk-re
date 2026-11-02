@@ -247,6 +247,7 @@ body.resizing{cursor:col-resize;user-select:none}
     <label class="chk"><input type="checkbox" id="deobf">DEOBF</label>
     <label class="chk"><input type="checkbox" id="force">FORCE</label>
     <button id="bDec">[ DECOMPILE ]</button>
+    <button id="bAttach" data-p title="Decompile this APK as an extra member of the current project (shared analysis context)">[ + ATTACH APK ]</button>
     <span class="sep">│</span>
     <button id="bBuild" data-p>[ BUILD ]</button>
     <button id="bSign" data-p>[ SIGN ]</button>
@@ -393,6 +394,7 @@ select code in the editor to send it as context. [ NEW SESSION ] starts fresh.</
 const TOKEN = "__TOKEN__";
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 let project = "", files = {}, current = null, busy = false;
+let currentApk = "";  // member (name) in focus for a multi-APK project; "" = primary/all
 
 // ---------- api ----------
 async function get(path, params = {}) {
@@ -458,6 +460,12 @@ $("#bDec").onclick = e => {
   if (!path) return log("[!] enter an APK path first");
   run("decompile", {path, deobf: $("#deobf").checked, force: $("#force").checked}, e.currentTarget);
 };
+$("#bAttach").onclick = e => {
+  const path = $("#path").value.trim();
+  if (!path) return log("[!] enter an APK path first");
+  if (!project) return log("[!] open a project first, then ATTACH adds another APK to it");
+  run("decompile", {path, attach_to: project, deobf: $("#deobf").checked, force: $("#force").checked}, e.currentTarget);
+};
 $("#bBuild").onclick = e => saveAll().then(() => run("build", {project}, e.currentTarget));
 $("#bSign").onclick = e => run("sign", {project}, e.currentTarget);
 $("#bBS").onclick = e => saveAll().then(() => run("build_sign", {project}, e.currentTarget)).then(() => refreshDir("dist"));
@@ -514,17 +522,23 @@ document.addEventListener("drop", async e => {
 });
 
 // ---------- projects & tree ----------
+let PROJECTS = [];
 async function loadProjects(select) {
-  const ps = await get("/api/projects");
+  PROJECTS = await get("/api/projects");
   $("#proj").innerHTML = `<option value="">-- select project --</option>` +
-    ps.map(p => `<option value="${p.project}">${p.package || p.project}  [${p.project.slice(-10)}]</option>`).join("");
+    PROJECTS.map(p => {
+      const n = (p.members || []).length;
+      const badge = n > 1 ? `  ×${n} APKs` : "";
+      return `<option value="${p.project}">${p.package || p.project}  [${p.project.slice(-10)}]${badge}</option>`;
+    }).join("");
   if (select) { $("#proj").value = select; openProject(select); }
 }
+function projectMembers(p) { return (PROJECTS.find(x => x.project === p) || {}).members || []; }
 $("#proj").onchange = e => openProject(e.target.value);
 
 async function openProject(p) {
   hideRes();
-  project = p; files = {}; current = null; renderTabs(); showEmpty(true);
+  project = p; currentApk = ""; files = {}; current = null; renderTabs(); showEmpty(true);
   $("#bTable").style.display = "none";
   $("#sProj").textContent = p || "none"; setButtons();
   $("#tree").innerHTML = ""; $("#bCounterpart").style.display = "none";
@@ -1032,11 +1046,24 @@ const DANGER = /(READ|WRITE)_(SMS|CONTACTS|CALL_LOG|EXTERNAL_STORAGE)|RECORD_AUD
 async function loadInfo() {
   const el = $("#r-info");
   el.innerHTML = `<div class="busy">&gt; parsing manifest...</div>`;
+  const members = projectMembers(project);
+  // multi-APK: focus one member at a time (default the primary) so every panel stays
+  // single-APK-shaped; the selector below switches which APK is in focus.
+  if (members.length > 1 && !currentApk)
+    currentApk = (members.find(m => m.primary) || members[0]).name;
   let i;
-  try { i = await get("/api/info", {project}); } catch (e) { el.innerHTML = `<div class="bad">${esc(e.message)}</div>`; return; }
+  try { i = await get("/api/info", {project, apk: currentApk}); } catch (e) { el.innerHTML = `<div class="bad">${esc(e.message)}</div>`; return; }
+  // multi-APK project: a selector picks which attached APK the info/scan/search target.
+  let apkBar = "";
+  if (members.length > 1) {
+    apkBar = `<div class="sec">// ATTACHED APKs (${members.length}) — APK in focus:</div>
+      <div class="row"><select id="apkSel">` +
+      members.map(m => `<option value="${m.name}"${m.name === currentApk ? " selected" : ""}>${esc(m.label)}${m.primary ? " (primary)" : ""}${m.package ? "  ·  " + esc(m.package) : ""}</option>`).join("") +
+      `</select></div>`;
+  }
   const a = i.application || {};
   const flag = (v, badIfTrue) => v == null ? `<span>-</span>` : `<span class="${(v === "true") === badIfTrue ? "bad" : "ok"}">${v}</span>`;
-  el.innerHTML = `
+  el.innerHTML = apkBar + `
     <div class="kv">
       <span>PACKAGE</span><span>${esc(i.package || "?")}</span>
       <span>VERSION</span><span>${esc(i.versionName || "?")} (${esc(i.versionCode || "?")})</span>
@@ -1061,6 +1088,12 @@ async function loadInfo() {
     openFile("jadx/sources/" + c.replace(/\./g, "/") + ".java");
   });
   el.querySelectorAll("[data-path]").forEach(h => h.onclick = () => openFile(h.dataset.path));
+  const sel = $("#apkSel");
+  if (sel) sel.onchange = () => {   // switch the attached APK in focus; refresh info + clear scans
+    currentApk = sel.value;
+    $("#scanOut").innerHTML = ""; $("#findOut").innerHTML = "";
+    loadInfo();
+  };
 }
 
 // clickable "path:line:text" result lines
@@ -1081,7 +1114,7 @@ function renderHits(el, text, base = "") {
 
 $$("[data-scan]").forEach(b => b.onclick = async () => {
   $("#scanOut").innerHTML = `<span class="busy">&gt; scanning ${b.dataset.scan}...</span>`;
-  try { renderHits($("#scanOut"), (await get("/api/scan", {project, kind: b.dataset.scan})).text); }
+  try { renderHits($("#scanOut"), (await get("/api/scan", {project, kind: b.dataset.scan, apk: currentApk})).text); }
   catch (e) { $("#scanOut").textContent = e.message; }
 });
 
@@ -1091,7 +1124,7 @@ async function doFind() {
   const scope = $("#scope").value;
   $("#findOut").innerHTML = `<span class="busy">&gt; grep ${esc(q)}...</span>`;
   try {
-    const r = await get("/api/search", {project, q, scope, i: $("#qi").checked ? "1" : "0"});
+    const r = await get("/api/search", {project, q, scope, i: $("#qi").checked ? "1" : "0", apk: currentApk});
     renderHits($("#findOut"), r.text, SCOPE_BASE[scope]);
   } catch (e) { $("#findOut").textContent = e.message; }
 }

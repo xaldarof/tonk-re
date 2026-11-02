@@ -22,18 +22,20 @@ ui.html ──HTTP──▶ gui.py ──imports──▶ server.py ──import
                   integration)                                ├─ native.py   ELF/.so static analysis
                                                               ├─ patches.py  manifest + smali patch engine
                                                               ├─ report.py   Markdown audit-report render
-                                                              └─ apis.py     sensitive-API catalog + perms
+                                                              ├─ apis.py     sensitive-API catalog + perms
+                                                              └─ projects.py multi-APK container model
                                            │ shells out to:  jadx · apktool · apksigner/zipalign · adb · radare2 · claude
 ```
 
 **Dependency direction is one-way and must stay that way:**
 
 - `server.py` is the **facade**: it owns `@mcp.tool()` definitions, the CLI dispatch, project
-  resolution (`_project_dir`, `_safe_join`) and the scanners. It imports the engine modules.
+  resolution (`_project_dir`, `_safe_join`, and the multi-APK member helpers `_members` /
+  `_member_dir`) and the scanners. It imports the engine modules.
 - `gui.py` imports `server as core` and adds **only** HTTP routing and OS integration
   (file dialogs, app window, streaming build/sign). It must not re-implement engine logic —
   call `core.*`.
-- **Engine modules** (`native.py`, `patches.py`, `tools.py`, `report.py`, `apis.py`) are **leaves**: pure, dependency-light,
+- **Engine modules** (`native.py`, `patches.py`, `tools.py`, `report.py`, `apis.py`, `projects.py`) are **leaves**: pure, dependency-light,
   and they **never import `server` or `gui`**. If an engine needs a project path or a resolved file
   list, the **caller passes it in** (dependency injection) — e.g. `patch_method_return()` takes the
   smali paths, it does not look them up. This keeps engines unit-testable and avoids import cycles.

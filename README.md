@@ -20,6 +20,7 @@ Runs on **macOS**, **Windows** and **Linux**.
 ## Features
 
 - **Decompile** `.apk` / `.xapk` / `.apks` / `.apkm` with [jadx](https://github.com/skylot/jadx) (Java/Kotlin source) and [apktool](https://apktool.org) (manifest, resources, smali) in one click.
+- **Multi-APK projects** — `[ + ATTACH APK ]` (and `attach_apk` / `tonkre attach`) adds another APK to the current project so a base + its split/feature APKs, or successive versions, are analysed together in one shared context. Each APK keeps its own decompiled sources, resources and metadata; the scanners (`apk_info`, secrets, URLs, crypto/security, APIs, the audit report) cover every member, and an APK-in-focus selector points the read/search tools at one. A single-APK project behaves exactly as before.
 - **Manifest attack-surface summary** — package, SDKs, `debuggable` / `allowBackup` / cleartext flags, exported components with their intent actions and deep-link schemes, dangerous permissions (highlighted), native libs, and detected frameworks (Flutter, React Native, Unity, Xamarin, Cordova).
 - **Code editor** with syntax highlighting for Java, smali, XML, JSON, JS and YAML. Tabs, find (`⌘F`), go-to-line (`⌥G`), and editable smali/resources.
 - **Security sweeps** — one click each for hard-coded secrets (Google/AWS/Stripe/GitHub/Slack keys, JWTs, private keys), URLs/endpoints, and risky API usage (weak crypto, TLS trust overrides, WebView JS bridges, dynamic code loading, root/Frida detection, raw SQL…).
@@ -155,7 +156,8 @@ The `tonkre` command exposes the core engine headlessly:
 
 ```sh
 tonkre decompile /path/to/app.apk      # -> prints the project name + manifest summary
-tonkre projects                        # list decompiled projects
+tonkre attach   <project> /path/to/extra.apk   # attach another APK to a project (shared context)
+tonkre projects                        # list decompiled projects (and attached APK members)
 tonkre info     <project>              # manifest attack-surface summary
 tonkre secrets  <project>              # hard-coded secrets
 tonkre urls     <project>              # endpoints
@@ -181,7 +183,7 @@ After install, the `tonk-re` MCP server is registered. In any `claude` session y
 decompile ~/Downloads/app.apk and audit it for hard-coded secrets and insecure crypto
 ```
 
-Claude will call the `tonk-re` tools (`decompile_apk`, `apk_info`, `find_secrets`, `find_crypto_and_security`, `search_code`, `read_class`, `xrefs`, `analyze_native`, `decompile_native`, `make_interceptable`, `patch_method`, `export_report`, `find_api_usage`, …) and report back with file:line evidence. A bundled skill guides the workflow.
+Claude will call the `tonk-re` tools (`decompile_apk`, `attach_apk`, `apk_info`, `find_secrets`, `find_crypto_and_security`, `search_code`, `read_class`, `xrefs`, `analyze_native`, `decompile_native`, `make_interceptable`, `patch_method`, `export_report`, `find_api_usage`, …) and report back with file:line evidence. A bundled skill guides the workflow.
 
 ## Configuration
 
