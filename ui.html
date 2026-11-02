@@ -308,6 +308,7 @@ body.resizing{cursor:col-resize;user-select:none}
         <button data-scan="secrets" data-p>[ SECRETS ]</button>
         <button data-scan="urls" data-p>[ URLS ]</button>
         <button data-scan="security" data-p>[ CRYPTO/SEC ]</button>
+        <button data-scan="apis" data-p title="Sensitive API usage + permission cross-reference">[ APIS ]</button>
       </div>
       <div id="scanOut" class="list"></div>
     </div>
@@ -1010,6 +1011,16 @@ $("#bRunDiff").onclick = async () => {
   h += block("EXPORTED COMPONENTS", d.exported_components);
   h += block("FRAMEWORKS", d.frameworks);
   h += block(`CLASSES (${d.classes.changed_count} changed)`, d.classes);
+  const mc = Object.entries(d.classes.method_changes || {});
+  if (mc.length) {
+    h += sec(`METHOD CHANGES (${mc.length} class${mc.length > 1 ? "es" : ""})`);
+    h += mc.map(([cls, m]) =>
+      `<span class="diff-ch">~ ${esc(cls)}</span>\n` +
+      (m.added || []).map(x => `<span class="diff-add">    + ${esc(x)}</span>`).join("\n") +
+      ((m.added && m.added.length && m.removed && m.removed.length) ? "\n" : "") +
+      (m.removed || []).map(x => `<span class="diff-rm">    − ${esc(x)}</span>`).join("\n")
+    ).join("\n");
+  }
   h += block("URLS / ENDPOINTS", d.urls);
   const fc = Object.entries(d.flag_changes || {});
   if (fc.length) h += sec("SECURITY FLAGS") + fc.map(([k, v]) => `<span class="diff-ch">~ ${k}: ${v[0]} → ${v[1]}</span>`).join("\n");

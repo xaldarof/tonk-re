@@ -608,7 +608,8 @@ class H(BaseHTTPRequestHandler):
                 self._json(core.info(p))
             elif u.path == "/api/scan":
                 fn = {"secrets": core.find_secrets, "urls": core.find_urls,
-                      "security": core.find_crypto_and_security}[q["kind"]]
+                      "security": core.find_crypto_and_security,
+                      "apis": core.find_api_usage}[q["kind"]]
                 self._json({"text": fn(p)})
             elif u.path == "/api/search":
                 self._json({"text": core.search_code(p, q["q"], q.get("scope", "java"),

@@ -13,7 +13,9 @@ Tools come from the `tonk-re` MCP server (`mcp__tonk-re__*`).
    (androidx, kotlin, okhttp, com.google are usually noise).
 3. **Attack surface**: `apk_info` → exported components, deep-link schemes, debuggable/allowBackup/
    cleartext flags. Read handlers for every exported component with `read_class`.
-4. **Sweeps**: `find_secrets`, `find_urls`, `find_crypto_and_security`. Confirm every hit by reading
+4. **Sweeps**: `find_secrets`, `find_urls`, `find_crypto_and_security`, and `find_api_usage`
+   (which sensitive Android APIs the app calls, grouped by capability and cross-referenced with the
+   declared permissions). Confirm every hit by reading
    the surrounding code; regex hits are leads, not findings.
 5. **Dig in**: `search_code` (scopes: java/smali/resources/all), `xrefs`, `read_class`, `read_file`.
    When jadx output is broken (`/* JADX WARNING */`), read the smali at `apktool/smali*/...`.

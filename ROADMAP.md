@@ -20,6 +20,10 @@ Contributions welcome; open an issue to claim one.
 - **Editor method menu** — right-click a Java/smali method for Frida (trace / override return), "ask Claude for a Frida hook", and the guided smali patches above.
 - **Report export** — one-click `[ REPORT ↯ ]` (and `export_report` / `tonkre report`) writes `AUDIT.md` into the project: manifest attack surface, hard-coded secrets, endpoints, crypto/security findings and the signing cert, with file:line evidence and a risk summary.
 - **Resource viewer** — click a drawable/icon (`png/jpg/webp/gif/bmp/ico`) to render it instead of raw bytes; `[ TABLE ▦ ]` renders a `res/values*` XML (strings, arrays, colors…) as a filterable name/value table.
+- **Sensitive-API usage + permission cross-reference** — `find_api_usage` / `tonkre apis` / `[ APIS ]` catalog which Android APIs the app calls (location, device IDs, SMS, camera, mic, clipboard, crypto, reflection, process exec, dynamic loading, root checks, …) grouped by capability, and flag APIs used without a matching permission / permissions declared but unused (engine: `apis.py`).
+- **Method-level version diff** — the version diff now lists added/removed method signatures per changed class, not just the changed-class list.
+- **Secret entropy filtering** — the loose `generic_secret` pattern is filtered by Shannon entropy and placeholder words, and ranked most-random-first, to cut false positives.
+- **Engine self-test** — `tonkre selftest` runs offline sanity checks of the pure engines; `tests/` holds stdlib `unittest` coverage runnable with no install.
 - Built-in Claude assistant (conversation memory, editable pre-prompt, orange tree-flash on file reads)
 - Missing-tool handling + setup banner, apktool version warning + updater
 - Cross-platform (macOS/Windows/Linux), native macOS Dock app, MCP server for Claude Code
@@ -46,7 +50,6 @@ Contributions welcome; open an issue to claim one.
 
 - [ ] **CI** — `py_compile` + a headless smoke test on push.
 - [ ] **Demo GIF** in the README.
-- [ ] **Method-level diff** in the version-diff view (not just changed-class list).
 - [ ] **Native window** on Windows/Linux (currently a Chromium app window), matching the macOS app.
 
 ---

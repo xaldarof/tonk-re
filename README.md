@@ -25,7 +25,8 @@ Runs on **macOS**, **Windows** and **Linux**.
 - **Security sweeps** — one click each for hard-coded secrets (Google/AWS/Stripe/GitHub/Slack keys, JWTs, private keys), URLs/endpoints, and risky API usage (weak crypto, TLS trust overrides, WebView JS bridges, dynamic code loading, root/Frida detection, raw SQL…).
 - **Regex search** across Java, smali or resources — click any hit to jump to the exact line.
 - **Deep-link / intent tester** — every exported activity/service/receiver and `scheme://host` deep link rendered as a ready-to-fire `adb am` intent, with editable data URI and extras; run it on a connected device or copy the command. No-permission (callable-by-any-app) components are flagged in red.
-- **Version diff** — pick two decompiled versions and see added/removed permissions and exported components, added/removed/**changed** classes, added/removed endpoints, framework changes and security-flag flips.
+- **Sensitive-API usage** — the `[ APIS ]` scan (and `find_api_usage` / `tonkre apis`) catalogs which Android APIs the app actually calls — location, device/SIM identifiers, SMS, camera, microphone, clipboard, crypto, reflection, process exec, dynamic code loading, root probing and more — grouped by capability, and **cross-references them with the declared permissions**: APIs used without a matching permission (reflection / library / manifest-merge) and permissions declared but never used (possible over-permission) are called out.
+- **Version diff** — pick two decompiled versions and see added/removed permissions and exported components, added/removed/**changed** classes with per-class **method-level** add/remove, added/removed endpoints, framework changes and security-flag flips.
 - **Frida hook generator** — generate a hook script for a method or whole class (trace args/return, stacktrace, override a return value) or a universal SSL-pinning / root-detection bypass; saved into the project with ready `frida` spawn/attach commands.
 - **Native `.so` analysis** — click any native library to open a read-only report: architecture/bitness, SONAME and NEEDED libs, **JNI entry points** (`Java_*` / `JNI_OnLoad`), exported & imported functions, exploit mitigations (exec-stack / RELRO / stack-canary / FORTIFY), and URLs/strings with a secret scan. Pure-stdlib ELF parser (no external tool); optional radare2 pseudo-code when installed. Unblocks Flutter / NDK / game apps where the logic lives in native code.
 - **One-click & guided patches** — the `[ PATCH ▾ ]` menu's **Make interceptable (MITM)** sets `debuggable`, allows cleartext and injects a `network_security_config` trusting user CA certs (the standard Burp / mitmproxy prep). **Right-click any method** in Java or smali for Frida (trace / override return), "ask Claude for a Frida hook", or a **guided smali patch** — force return true/false, return null/0, or no-op — then BUILD+SIGN. The static counterpart to the Frida generator, ideal for root/premium/license gates.
@@ -168,6 +169,8 @@ tonkre native   <project> <so_path>    # analyze a native .so (arch, JNI, export
 tonkre mitm     <project>              # make interceptable (debuggable + user-CA network config)
 tonkre patch    <project> <class> <method> [force_true|force_false|return_zero|return_null|noop]
 tonkre report   <project>              # write a Markdown audit report (AUDIT.md) into the project
+tonkre apis     <project>              # sensitive-API usage + permission cross-reference
+tonkre selftest                        # offline engine sanity checks (exit 0/1; for CI)
 ```
 
 ### With Claude Code
@@ -178,7 +181,7 @@ After install, the `tonk-re` MCP server is registered. In any `claude` session y
 decompile ~/Downloads/app.apk and audit it for hard-coded secrets and insecure crypto
 ```
 
-Claude will call the `tonk-re` tools (`decompile_apk`, `apk_info`, `find_secrets`, `find_crypto_and_security`, `search_code`, `read_class`, `xrefs`, `analyze_native`, `decompile_native`, `make_interceptable`, `patch_method`, `export_report`, …) and report back with file:line evidence. A bundled skill guides the workflow.
+Claude will call the `tonk-re` tools (`decompile_apk`, `apk_info`, `find_secrets`, `find_crypto_and_security`, `search_code`, `read_class`, `xrefs`, `analyze_native`, `decompile_native`, `make_interceptable`, `patch_method`, `export_report`, `find_api_usage`, …) and report back with file:line evidence. A bundled skill guides the workflow.
 
 ## Configuration
 

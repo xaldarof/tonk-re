@@ -20,7 +20,9 @@ An Android APK reverse-engineering workbench: decompile (jadx + apktool), inspec
 ui.html ──HTTP──▶ gui.py ──imports──▶ server.py ──imports──▶ engine modules
 (front-end)      (HTTP + OS           (MCP + CLI facade)      ├─ tools.py    toolchain install/activate
                   integration)                                ├─ native.py   ELF/.so static analysis
-                                                              └─ patches.py  manifest + smali patch engine
+                                                              ├─ patches.py  manifest + smali patch engine
+                                                              ├─ report.py   Markdown audit-report render
+                                                              └─ apis.py     sensitive-API catalog + perms
                                            │ shells out to:  jadx · apktool · apksigner/zipalign · adb · radare2 · claude
 ```
 
@@ -31,7 +33,7 @@ ui.html ──HTTP──▶ gui.py ──imports──▶ server.py ──import
 - `gui.py` imports `server as core` and adds **only** HTTP routing and OS integration
   (file dialogs, app window, streaming build/sign). It must not re-implement engine logic —
   call `core.*`.
-- **Engine modules** (`native.py`, `patches.py`, `tools.py`) are **leaves**: pure, dependency-light,
+- **Engine modules** (`native.py`, `patches.py`, `tools.py`, `report.py`, `apis.py`) are **leaves**: pure, dependency-light,
   and they **never import `server` or `gui`**. If an engine needs a project path or a resolved file
   list, the **caller passes it in** (dependency injection) — e.g. `patch_method_return()` takes the
   smali paths, it does not look them up. This keeps engines unit-testable and avoids import cycles.
@@ -89,6 +91,7 @@ New analysis capability → new engine module (or extend an existing one) + a th
 - `python -c "import py_compile; py_compile.compile('<file>.py', doraise=True)"` for each changed
   module (deps aren't needed to compile).
 - Full import through uv: `uv run --script server.py cli` (prints usage; forces all imports).
+- Engine sanity: `uv run --script server.py cli selftest` (offline) and `python -m unittest discover -s tests`.
 - `ui.html`: confirm the inline `<script>` still parses (e.g. `new Function(...)` on its contents).
 - Update `ROADMAP.md` (move the item to **Shipped**) and `skill/SKILL.md` when you add a tool.
 
